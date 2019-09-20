@@ -288,7 +288,7 @@ def validate(train_loader, val_loader, model, criterion, args):
         sub_val = None
         for i, (images, target) in enumerate(train_loader):
             end = time.time()
-            print("#" + "-"*30 + ' ' + str(i) + ' ' + "-"*30 + "#")
+            print("#" + "-"*30 + ' ' + str(i) + 'sample ' + "-"*30 + "#")
             # Reverse order
             images = torch.from_numpy(images.numpy()[::-1].copy())
             target = torch.from_numpy(target.numpy()[::-1].copy())
@@ -352,7 +352,7 @@ def validate(train_loader, val_loader, model, criterion, args):
             # subspace
             sum_all = np.sum(e_val)
             sum_val = np.array([np.sum(e_val[:i])/sum_all for i in range(1, len(e_val)+1)])
-            r = int(min(np.where(sum_val >= 0.9999)[0])+1)
+            r = int(min(np.where(sum_val >= 0.999999999)[0])+1)
             sub_vec = e_vec.T[:r].T
             sub_val = e_val[:r]
             print("sub_vec", sub_vec.shape)
