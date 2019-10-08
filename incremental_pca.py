@@ -307,35 +307,27 @@ def main_worker(gpu, ngpus_per_node, args):
         num_workers=args.workers, pin_memory=True)
 
     # しきい値の決定
-    threshoulds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
-    threshould_results = {}
-    for test_threshould in threshoulds_list:
+    thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
+    threshold_results = {}
+    for test_threshold in thresholds_list:
         d_average = 0
         for k_count in range(args.kfold):
             # Train
             train_sampler.set_k(k_count)
             print("train index", train_sampler.train)
             print("val_index", train_sampler.val)
-            d_average += train(train_loader, val_loader, model, criterion, args, k_count, test_threshould)
-        threshould_results[test_threshould] = d_average/args.kfold
-        print(str(test_threshould), d_average/args.kfold)
-    print(threshould_results)
-    threshould = min(threshould_results, key=threshould_results.get)
-    print(threshould, threshould_results[threshould])
+            d_average += train(train_loader, val_loader, model, criterion, args, k_count, test_threshold)
+        threshold_results[test_threshold] = d_average/args.kfold
+        print(str(test_threshold), d_average/args.kfold)
+    print(threshold_results)
+    threshold = min(threshold_results, key=threshold_results.get)
+    print(threshold, threshold_results[threshold])
 
     # 決めたしきい値を用いてもう一度正常部分空間をすべての正常データで作る
     # それに対して以上データを追加していく
 
 
-def train(train_loader, val_loader, model, criterion, args, k_count, test_threshould):
-    batch_time = AverageMeter('Time', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
-    progress = ProgressMeter(
-        len(val_loader),
-        [batch_time, losses, top1, top5],
-        prefix='Test: ')
+def train(train_loader, val_loader, model, criterion, args, k_count, test_threshold):
 
     # switch to evaluate mode
     model.eval()
@@ -373,63 +365,26 @@ def train(train_loader, val_loader, model, criterion, args, k_count, test_thresh
             print("input shape (model output)", output.shape)
             # SVDを用いた正常部分空間作成
             if (i == 0):
-                # svd
-                print("SVD", len(output))
-                U, s, V = np.linalg.svd(output)
-                e_val = s**2 / output.shape[0]
-                e_vec = V.T
+                e_vec, e_val = calc_SVD(output)
 
             # インクリメンタルPCAを用いた更新
             else:
                 # incremental
                 print("Incremental")
-                h = np.reshape(output[0] - sub_vec @ sub_vec.T @ output[0], (-1, 1))
-                h_norm = np.linalg.norm(h)
-                h_hat = h / h_norm if h_norm > 0.1 else np.zeros(h.shape)
-                g = np.reshape(sub_vec.T @ output[0], (-1, 1))
-                gamma = h_hat.T @ output[0]
-                # calc L
-                lamd = np.diag(sub_val)
-                l1 = np.block([[lamd, np.zeros((lamd.shape[0], 1))],
-                              [np.zeros((1, lamd.shape[1])), 0]])
-                l2 = np.block([[g @ g.T, gamma * g],
-                               [gamma * g.T, gamma**2]])
-                ll = (i/(i+1) * l1) + (1/(i+1) * l2)
-                # calc rotation matrix
-                e_val, rot = np.linalg.eigh(ll)
-                e_val = e_val[::-1]
-                # update e_vec
-                e_vec = np.block([sub_vec, h_hat]) @ rot
-                e_vec = e_vec.T[::-1].T
-                # e_vec = (np.block([h_hat, sub_vec]) @ rot)[::-1]
+                e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i)
 
             print("e_val.shape", e_val.shape)
             print("e_val", e_val)
             print("e_vec.shape", e_vec.shape)
             print("e_vec", e_vec)
             plt.figure()
-            # plt.yscale('log')
             plt.plot(e_val)
             plt.savefig('e_val.png')
 
             # subspace
             # 次元を落として部分空間を作成
             print("### Calc Subspace")
-            sum_all = np.sum(e_val)
-            sum_val = np.array([np.sum(e_val[:i])/sum_all for i in range(1, len(e_val)+1)])
-            r = int(min(np.where(sum_val >= test_threshould)[0])+1)
-            sub_vec = e_vec.T[:r].T
-            sub_val = e_val[:r]
-            print("sub_vec.shape", sub_vec.shape)
-            print("sub_vec", sub_vec)
-
-            # print(r)
-            plt.figure()
-            plt.plot(sum_val)
-            plt.savefig('sum_e_val.png')
-
-            if i % args.print_freq == 0:
-                progress.display(i)
+            sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold)
 
             print(time.time() - end)
 
@@ -464,24 +419,7 @@ def train(train_loader, val_loader, model, criterion, args, k_count, test_thresh
         target = torch.cat(targets_list).numpy()
 
         print("### Calc Error")
-        # Y_rec
-        y = output @ sub_vec @ sub_vec.T
-
-        # l2
-        # ユークリッド距離
-        # good_d = np.linalg.norm(output-y, axis=1)
-        # sin
-        # good_d = [np.linalg.norm(np.outer(oi, yi)) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(output, y)] # 使えない
-        # cos
-        good_d = [np.inner(oi, yi) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(output, y)]
-        # sin
-        good_d = np.sqrt(1-np.power(good_d, 2))
-        print(good_d)
-
-        # 分散
-        # good_variarance = good_d.var()
-        # 標準偏差
-        good_stddev = good_d.std()
+        good_d, good_stddev = calc_errorval(output, sub_vec)
 
         # -------------------test---------------------------------
         # 生成した正常部分空間を以上データを含めて評価(可視化用)
@@ -506,25 +444,13 @@ def train(train_loader, val_loader, model, criterion, args, k_count, test_thresh
         target = torch.cat(targets_list).numpy()
 
         print("### Calc Error")
-        # Y_rec
-        y = output @ sub_vec @ sub_vec.T
-
-        # l2
-        # ユークリッド距離
-        # d = np.linalg.norm(output-y, axis=1)
-        # sin
-        # d = [np.linalg.norm(np.outer(oi, yi)) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(output, y)] # 使えない
-        # cos
-        d = [np.inner(oi, yi) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(output, y)]
-        # sin
-        d = np.sqrt(1-np.power(d, 2))
-        print(d)
+        d, _ = calc_errorval(output, sub_vec)
 
         plt.figure()
         plt.ylim(0, 1)
         plt.scatter(range(len(d)), d, c=target, cmap=cm.nipy_spectral)
         plt.colorbar()
-        plt.savefig('d_{}_{}.png'.format(str(test_threshould), k_count))
+        plt.savefig('d_{}_{}.png'.format(str(test_threshold), k_count))
 
         # roc_label = np.where((target == 0) | (target == 1))
         # d = d[roc_label]
@@ -536,6 +462,71 @@ def train(train_loader, val_loader, model, criterion, args, k_count, test_thresh
         # print(metrics.roc_auc_score(target, (d*(-1))))
 
     return np.mean(good_d) + good_stddev*10
+
+
+def calc_SVD(features):
+    # svd
+    print("SVD", len(features))
+    U, s, V = np.linalg.svd(features)
+    e_val = s**2 / features.shape[0]
+    e_vec = V.T
+    return e_vec, e_val
+
+
+def calc_sub_vec(e_vec, e_val, threshold):
+    sum_all = np.sum(e_val)
+    sum_val = np.array([np.sum(e_val[:i])/sum_all for i in range(1, len(e_val)+1)])
+    r = int(min(np.where(sum_val >= threshold)[0])+1)
+    sub_vec = e_vec.T[:r].T
+    sub_val = e_val[:r]
+
+    plt.figure()
+    plt.plot(sum_val)
+    plt.savefig('sum_e_val.png')
+    print("sub_vec.shape", sub_vec.shape)
+    print("sub_vec", sub_vec)
+    return sub_vec, sub_val
+
+
+def incremental_PCA(features, sub_vec, sub_val, n):
+    h = np.reshape(features[0] - sub_vec @ sub_vec.T @ features[0], (-1, 1))
+    h_norm = np.linalg.norm(h)
+    h_hat = h / h_norm if h_norm > 0.1 else np.zeros(h.shape)
+    g = np.reshape(sub_vec.T @ features[0], (-1, 1))
+    gamma = h_hat.T @ features[0]
+    # calc L
+    lamd = np.diag(sub_val)
+    l1 = np.block([[lamd, np.zeros((lamd.shape[0], 1))],
+                  [np.zeros((1, lamd.shape[1])), 0]])
+    l2 = np.block([[g @ g.T, gamma * g],
+                   [gamma * g.T, gamma**2]])
+    ll = (n/(n+1) * l1) + (1/(n+1) * l2)
+    # calc rotation matrix
+    e_val, rot = np.linalg.eigh(ll)
+    e_val = e_val[::-1]
+    # update e_vec
+    e_vec = np.block([sub_vec, h_hat]) @ rot
+    e_vec = e_vec.T[::-1].T
+    return e_vec, e_val
+
+
+def calc_errorval(features, sub_vec):
+    # Y_rec
+    y = features @ sub_vec @ sub_vec.T
+
+    # ユークリッド距離
+    # dist = np.linalg.norm(output-y, axis=1)
+    # cos
+    dist = [np.inner(oi, yi) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(features, y)]
+    # sin
+    dist = np.sqrt(1-np.power(dist, 2))
+    print(dist)
+
+    # 分散
+    # good_variarance = dist.var()
+    # 標準偏差
+    stddev = dist.std()
+    return dist, stddev
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
