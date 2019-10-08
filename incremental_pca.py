@@ -316,7 +316,6 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_k(k_count)
             print("train index", train_sampler.train)
             print("val_index", train_sampler.val)
-            # 学習
             d_average += train(train_loader, val_loader, model, criterion, args, k_count, test_threshould)
         threshould_results[test_threshould] = d_average/args.kfold
         print(str(test_threshould), d_average/args.kfold)
@@ -326,7 +325,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # 決めたしきい値を用いてもう一度正常部分空間をすべての正常データで作る
     # それに対して以上データを追加していく
-    # train_defect(train_loader, val_loader, model, criterion, args, threshould)
 
 
 def train(train_loader, val_loader, model, criterion, args, k_count, test_threshould):
@@ -347,8 +345,7 @@ def train(train_loader, val_loader, model, criterion, args, k_count, test_thresh
     with torch.no_grad():
         sub_vec = None
         sub_val = None
-        # 学習用正常データ全てで学習
-        train_loader.sampler.set_state("good")
+        train_loader.sampler.set_state("good_train")
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
             end = time.time()
             print("\n#" + "-"*30 + ' ' + str(i) + 'epoch ' + "-"*30 + "#")
