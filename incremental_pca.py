@@ -4,7 +4,7 @@ import random
 import shutil
 import time
 import warnings
-import umap
+# import umap
 # from scipy.sparse.csgraph import connected_components
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -45,6 +45,8 @@ parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
+parser.add_argument('-vb', '--val-batch-size', default=1000, type=int,
+                    metavar='N')
 parser.add_argument('-b', '--batch-size', default=1, type=int,
                     metavar='N',
                     help='mini-batch size (default: 1), this is the total '
@@ -82,8 +84,60 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or'
                          ' multi node data parallel training')
+parser.add_argument('--kfold', default=5, type=int)
 
 best_acc1 = 0
+
+
+class KFoldSampler(torch.utils.data.Sampler):
+
+    def __init__(self, data_source, k=5, seed=None):
+        self.data_source = data_source
+        self.good_index = [i for i, (x, y) in enumerate(data_source.imgs) if data_source.classes[int(y)] == "good"]
+        self.defective_index = [i for i, (x, y) in enumerate(data_source.imgs) if data_source.classes[int(y)] == "defective"]
+        np.random.seed(seed)
+        np.random.shuffle(self.good_index)
+        np.random.shuffle(self.defective_index)
+        self.good_index_split = np.array_split(self.good_index, k)
+        self.state = "good_train"
+        self.set_k(0)
+
+    def set_k(self, kidx):
+        self.train = self.good_index_split[:]
+        del self.train[kidx]
+        self.train = [i for inter in self.train for i in inter]
+        self.val = self.good_index_split[kidx]
+
+    def set_state(self, state):
+        self.state = state
+
+    def __iter__(self):
+        if self.state == "test":
+            return iter(range(len(self.data_source)))
+        elif self.state == "good_train":
+            return iter(self.train)
+        elif self.state == "good_val":
+            return iter(self.val)
+        elif self.state == "good":
+            return iter(self.good_index)
+        elif self.state == "defective":
+            return iter(self.defective_index)
+        else:
+            assert True
+
+    def __len__(self):
+        if self.state == "test":
+            return len(self.data_source)
+        elif self.state == "good_train":
+            return len(self.train)
+        elif self.state == "good_val":
+            return len(self.val)
+        elif self.state == "good":
+            return len(self.good_index)
+        elif self.state == "defective":
+            return len(self.defective_index)
+        else:
+            assert True
 
 
 def main():
@@ -140,6 +194,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                 init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
+    args.arch = 'mobilenet_v2'
     if args.pretrained:
         print("=> using pre-trained model '{}'".format(args.arch))
         model = models.__dict__[args.arch](pretrained=True)
@@ -221,36 +276,20 @@ def main_worker(gpu, ngpus_per_node, args):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-    # train_dataset = datasets.ImageFolder(
-    #     traindir,
-    #     transforms.Compose([
-    #         transforms.RandomResizedCrop(224),
-    #         transforms.RandomHorizontalFlip(),
-    #         transforms.ToTensor(),
-    #         normalize,
-    #     ]))
-
-    # if args.distributed:
-    #     train_sampler = torch.utils.data.distributed.DistributedSampler(
-    #             train_dataset)
-    # else:
-    #     train_sampler = None
-
-    # train_loader = torch.utils.data.DataLoader(
-    #     train_dataset, batch_size=args.batch_size, shuffle=(
-    #         train_sampler is None),
-    #     num_workers=args.workers, pin_memory=True, sampler=train_sampler)
-
     train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
             transforms.Resize(224),
             # transforms.Grayscale(),
             transforms.ToTensor(),
             # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
-            normalize,
+            normalize
         ]))
-    print(train_dataset.classes)
+    print("Train", train_dataset.classes)
+
+    train_sampler = KFoldSampler(train_dataset, seed=10, k=5)
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
+        sampler=train_sampler,
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
@@ -261,16 +300,28 @@ def main_worker(gpu, ngpus_per_node, args):
             # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
             normalize,
         ]))
-    print(val_dataset.classes)
+    print("Test", val_dataset.classes)
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=args.batch_size, shuffle=False,
+        batch_size=args.val_batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    validate(train_loader, val_loader, model, criterion, args)
+    threshoulds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
+    threshould_results = {}
+    for test_threshould in threshoulds_list:
+        d_average = 0
+        for k_count in range(args.kfold):
+            # Train
+            train_sampler.set_k(k_count)
+            print("train index", train_sampler.train)
+            print("val_index", train_sampler.val)
+            d_average += train(train_loader, val_loader, model, criterion, args, k_count, test_threshould)
+        threshould_results[test_threshould] = d_average/args.kfold
+        print(str(test_threshould), d_average/args.kfold)
+    print(threshould_results)
 
 
-def validate(train_loader, val_loader, model, criterion, args):
+def train(train_loader, val_loader, model, criterion, args, k_count, test_threshould):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -283,12 +334,15 @@ def validate(train_loader, val_loader, model, criterion, args):
     # switch to evaluate mode
     model.eval()
 
+    # Train
+    # 正常データのみを用いたトレーニング
     with torch.no_grad():
         sub_vec = None
         sub_val = None
-        for i, (images, target) in enumerate(train_loader):
+        train_loader.sampler.set_state("good_train")
+        for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
             end = time.time()
-            print("#" + "-"*30 + ' ' + str(i) + 'sample ' + "-"*30 + "#")
+            print("\n#" + "-"*30 + ' ' + str(i) + 'epoch ' + "-"*30 + "#")
             # Reverse order
             images = torch.from_numpy(images.numpy()[::-1].copy())
             target = torch.from_numpy(target.numpy()[::-1].copy())
@@ -309,22 +363,20 @@ def validate(train_loader, val_loader, model, criterion, args):
             # output = output.numpy()
             # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
 
+            print("### Calc eigenvalue, eigenvector")
+            print("input shape (model output)", output.shape)
+            # SVDを用いた正常部分空間作成
             if (i == 0):
                 # svd
-                print("svd shape", output.shape)
+                print("SVD", len(output))
                 U, s, V = np.linalg.svd(output)
                 e_val = s**2 / output.shape[0]
-                print("e_val", e_val)
                 e_vec = V.T
-                print("e_vec", e_vec)
 
-                plt.figure()
-                plt.yscale('log')
-                plt.plot(e_val)
-                plt.savefig('e_val.png')
-
+            # インクリメンタルPCAを用いた更新
             else:
                 # incremental
+                print("Incremental")
                 h = np.reshape(output[0] - sub_vec @ sub_vec.T @ output[0], (-1, 1))
                 h_norm = np.linalg.norm(h)
                 h_hat = h / h_norm if h_norm > 0.1 else np.zeros(h.shape)
@@ -340,22 +392,29 @@ def validate(train_loader, val_loader, model, criterion, args):
                 # calc rotation matrix
                 e_val, rot = np.linalg.eigh(ll)
                 e_val = e_val[::-1]
-                print("e_val", e_val.shape)
-                print("e_val", e_val)
                 # update e_vec
                 e_vec = np.block([sub_vec, h_hat]) @ rot
                 e_vec = e_vec.T[::-1].T
                 # e_vec = (np.block([h_hat, sub_vec]) @ rot)[::-1]
-                print("e_vec", e_vec.shape)
-                print("e_vec", e_vec)
+
+            print("e_val.shape", e_val.shape)
+            print("e_val", e_val)
+            print("e_vec.shape", e_vec.shape)
+            print("e_vec", e_vec)
+            plt.figure()
+            # plt.yscale('log')
+            plt.plot(e_val)
+            plt.savefig('e_val.png')
 
             # subspace
+            # 次元を落として部分空間を作成
+            print("### Calc Subspace")
             sum_all = np.sum(e_val)
             sum_val = np.array([np.sum(e_val[:i])/sum_all for i in range(1, len(e_val)+1)])
-            r = int(min(np.where(sum_val >= 0.999999999)[0])+1)
+            r = int(min(np.where(sum_val >= test_threshould)[0])+1)
             sub_vec = e_vec.T[:r].T
             sub_val = e_val[:r]
-            print("sub_vec", sub_vec.shape)
+            print("sub_vec.shape", sub_vec.shape)
             print("sub_vec", sub_vec)
 
             # print(r)
@@ -368,53 +427,109 @@ def validate(train_loader, val_loader, model, criterion, args):
 
             print(time.time() - end)
 
-        # TODO: this should also be done with the ProgressMeter
-        print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
-              .format(top1=top1, top5=top5))
+        # # umap
+        # # embedding = PCA(random_state=0).fit_transform(output.cpu())
+        # embedding = umap.UMAP(n_neighbors=5, random_state=0).fit_transform(output)
+        # plt.figure()
+        # plt.scatter(embedding[:, 0], embedding[:, 1], c=target, cmap=cm.nipy_spectral)
+        # plt.colorbar()
+        # plt.savefig('umap.png')
 
-        # umap
-        # embedding = PCA(random_state=0).fit_transform(output.cpu())
-        embedding = umap.UMAP(n_neighbors=5, random_state=0).fit_transform(output)
+        # ----------------validation------------------------
+        # 生成した正常部分空間を正常データのみで評価(寄与率決定用)
+        train_loader.sampler.set_state("good")
+        outputs_list = []
+        targets_list = []
+        for i, (images, target) in enumerate(train_loader):
+            if args.gpu is not None:
+                images = images.cuda(args.gpu, non_blocking=True)
+            target = target.cuda(args.gpu, non_blocking=True)
+
+            # compute output
+            output = model(images)
+            output = output.cpu()
+            target = target.cpu()
+            # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
+            # output = scaler.transform(output)
+            outputs_list.append(output)
+            targets_list.append(target)
+
+        output = torch.cat(outputs_list).numpy()
+        target = torch.cat(targets_list).numpy()
+
+        print("### Calc Error")
+        # Y_rec
+        y = output @ sub_vec @ sub_vec.T
+
+        # l2
+        # ユークリッド距離
+        # good_d = np.linalg.norm(output-y, axis=1)
+        # sin
+        # good_d = [np.linalg.norm(np.outer(oi, yi)) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(output, y)] # 使えない
+        # cos
+        good_d = [np.inner(oi, yi) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(output, y)]
+        # sin
+        good_d = np.sqrt(1-np.power(good_d, 2))
+        print(good_d)
+
+        # 分散
+        good_variarance = good_d.var()
+        # 標準偏差
+        good_stddev = good_d.std()
+
+        # -------------------test---------------------------------
+        # 生成した正常部分空間を以上データを含めて評価(可視化用)
+        train_loader.sampler.set_state("test")
+        outputs_list = []
+        targets_list = []
+        for i, (images, target) in enumerate(train_loader):
+            if args.gpu is not None:
+                images = images.cuda(args.gpu, non_blocking=True)
+            target = target.cuda(args.gpu, non_blocking=True)
+
+            # compute output
+            output = model(images)
+            output = output.cpu()
+            target = target.cpu()
+            # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
+            # output = scaler.transform(output)
+            outputs_list.append(output)
+            targets_list.append(target)
+
+        output = torch.cat(outputs_list).numpy()
+        target = torch.cat(targets_list).numpy()
+
+        print("### Calc Error")
+        # Y_rec
+        y = output @ sub_vec @ sub_vec.T
+
+        # l2
+        # ユークリッド距離
+        # d = np.linalg.norm(output-y, axis=1)
+        # sin
+        # d = [np.linalg.norm(np.outer(oi, yi)) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(output, y)] # 使えない
+        # cos
+        d = [np.inner(oi, yi) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(output, y)]
+        # sin
+        d = np.sqrt(1-np.power(d, 2))
+        print(d)
+
         plt.figure()
-        plt.scatter(embedding[:, 0], embedding[:, 1], c=target, cmap=cm.nipy_spectral)
+        plt.ylim(0, 1)
+        plt.scatter(range(len(d)), d, c=target, cmap=cm.nipy_spectral)
         plt.colorbar()
-        plt.savefig('umap.png')
+        plt.savefig('d_{}_{}.png'.format(str(test_threshould), k_count))
 
-        # # validation
-        # for i, (images, target) in enumerate(val_loader):
-        #     if args.gpu is not None:
-        #         images = images.cuda(args.gpu, non_blocking=True)
-        #     target = target.cuda(args.gpu, non_blocking=True)
+        # roc_label = np.where((target == 0) | (target == 1))
+        # d = d[roc_label]
+        # target = target[roc_label]
+        # fpr, tpr, thresholds = metrics.roc_curve(target, (d*(-1)))
+        # plt.figure()
+        # plt.plot(fpr, tpr)
+        # plt.savefig('roc.png')
+        # print(metrics.roc_auc_score(target, (d*(-1))))
 
-        #     # compute output
-        #     output = model(images)
-        #     output = output.cpu().numpy()
-        #     target = target.cpu().numpy()
-        #     # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
-        #     # output = scaler.transform(output)
-
-        #     # Y_rec
-        #     y = output @ e_vec @ e_vec.T
-
-        #     # l2
-        #     d = np.linalg.norm(output-y, axis=1)
-        #     print(d)
-
-        #     plt.figure()
-        #     plt.scatter(range(len(d)), d, c=target, cmap=cm.nipy_spectral)
-        #     plt.colorbar()
-        #     plt.savefig('d.png')
-
-        #     roc_label = np.where((target == 0) | (target == 1))
-        #     d = d[roc_label]
-        #     target = target[roc_label]
-        #     fpr, tpr, thresholds = metrics.roc_curve(target, (d*(-1)))
-        #     plt.figure()
-        #     plt.plot(fpr, tpr)
-        #     plt.savefig('roc.png')
-        #     print(metrics.roc_auc_score(target, (d*(-1))))
-
-    return top1.avg
+    return np.mean(good_d)
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
