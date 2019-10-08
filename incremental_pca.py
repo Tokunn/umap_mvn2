@@ -306,6 +306,7 @@ def main_worker(gpu, ngpus_per_node, args):
         batch_size=args.val_batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
+    # しきい値の決定
     threshoulds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
     threshould_results = {}
     for test_threshould in threshoulds_list:
@@ -315,10 +316,17 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_k(k_count)
             print("train index", train_sampler.train)
             print("val_index", train_sampler.val)
+            # 学習
             d_average += train(train_loader, val_loader, model, criterion, args, k_count, test_threshould)
         threshould_results[test_threshould] = d_average/args.kfold
         print(str(test_threshould), d_average/args.kfold)
     print(threshould_results)
+    threshould = min(threshould_results, key=threshould_results.get)
+    print(threshould, threshould_results[threshould])
+
+    # 決めたしきい値を用いてもう一度正常部分空間をすべての正常データで作る
+    # それに対して以上データを追加していく
+    # train_defect(train_loader, val_loader, model, criterion, args, threshould)
 
 
 def train(train_loader, val_loader, model, criterion, args, k_count, test_threshould):
@@ -339,7 +347,8 @@ def train(train_loader, val_loader, model, criterion, args, k_count, test_thresh
     with torch.no_grad():
         sub_vec = None
         sub_val = None
-        train_loader.sampler.set_state("good_train")
+        # 学習用正常データ全てで学習
+        train_loader.sampler.set_state("good")
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
             end = time.time()
             print("\n#" + "-"*30 + ' ' + str(i) + 'epoch ' + "-"*30 + "#")
@@ -473,7 +482,7 @@ def train(train_loader, val_loader, model, criterion, args, k_count, test_thresh
         print(good_d)
 
         # 分散
-        good_variarance = good_d.var()
+        # good_variarance = good_d.var()
         # 標準偏差
         good_stddev = good_d.std()
 
@@ -529,7 +538,7 @@ def train(train_loader, val_loader, model, criterion, args, k_count, test_thresh
         # plt.savefig('roc.png')
         # print(metrics.roc_auc_score(target, (d*(-1))))
 
-    return np.mean(good_d)
+    return np.mean(good_d) + good_stddev*10
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
