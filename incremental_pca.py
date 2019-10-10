@@ -4,7 +4,7 @@ import random
 import shutil
 import time
 import warnings
-# import umap
+import umap
 # from scipy.sparse.csgraph import connected_components
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -90,10 +90,21 @@ best_acc1 = 0
 
 
 def DEBUG(*args):
-    input("[!!] DEBUG, > ")
+    # input("[!!] DEBUG, > ")
     if len(args) == 1:
         return args[0]
     return args
+
+
+def DEBUG_SHOW(images):
+    os.makedirs('imgs', exists_ok=True)
+    imgs = np.transpose(images, (0, 2, 3, 1))
+    for i, img in enumerate(imgs):
+        plt.figure()
+        plt.imshow(img)
+        plt.savefig("imgs/{}.png".format(str(time.time())))
+        # plt.show()
+        plt.close()
 
 
 class KFoldSampler(torch.utils.data.Sampler):
@@ -292,7 +303,7 @@ def main_worker(gpu, ngpus_per_node, args):
         ]))
     print("Train", train_dataset.classes)
 
-    train_sampler = KFoldSampler(train_dataset, seed=10, k=5)
+    train_sampler = KFoldSampler(train_dataset, seed=1, k=5)
 
     train_loader1000 = torch.utils.data.DataLoader(
         train_dataset,
@@ -321,7 +332,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # しきい値の決定
     thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
-    thresholds_list = DEBUG([0.99])
+    # thresholds_list = DEBUG([0.99])
     threshold_results = {}
     for test_threshold in thresholds_list:
         d_average = 0
@@ -362,6 +373,8 @@ def train_good(train_loader, val_loader, model,
         sub_val = None
         train_loader.sampler.set_state(sampler_state)
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
+            assert i == 0
+            # DEBUG_SHOW(images)
             end = time.time()
             print("\n#" + "="*30 + ' train_good SVD ' + "="*30 + "#")
             # Reverse order
@@ -398,12 +411,13 @@ def train_good(train_loader, val_loader, model,
                 e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i)
 
             print("e_val.shape", e_val.shape)
-            print("e_val", e_val)
+            # print("e_val", e_val)
             print("e_vec.shape", e_vec.shape)
-            print("e_vec", e_vec)
-            plt.figure()
-            plt.plot(e_val)
-            plt.savefig('e_val.png')
+            # print("e_vec", e_vec)
+            # plt.figure()
+            # plt.plot(e_val)
+            # plt.savefig('E_VAL.png')
+            # plt.close()
 
             # subspace
             # 次元を落として部分空間を作成
@@ -413,7 +427,7 @@ def train_good(train_loader, val_loader, model,
             print(time.time() - end)
 
             if sampler_state == 'good':
-                testall(val_loader, model, args, test_threshold, sub_vec, prefix="good")
+                testall(val_loader, model, args, test_threshold, sub_vec, sub_val, prefix="good")
 
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
@@ -491,10 +505,14 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
     # 異常データを追加していく
     with torch.no_grad():
         assert train_loader.batch_size == 1
+        # 正常の学習に使用した枚数を取得
+        train_loader.sampler.set_state("good")
+        n_good = len(train_loader)
         train_loader.sampler.set_state("defective")  # 異常データを１枚ずつ
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
+            # DEBUG_SHOW(images)
             end = time.time()
-            print("\n#" + "-"*30 + ' ' + str(i) + 'epoch ' + "-"*30 + "#")
+            print("\n#" + "-"*30 + ' ' + str(i) + 'train defective ' + "-"*30 + "#")
             # Reverse order
             images = torch.from_numpy(images.numpy()[::-1].copy())
             target = torch.from_numpy(target.numpy()[::-1].copy())
@@ -514,27 +532,25 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             # インクリメンタルPCAを用いた更新
             # incremental
             print("Incremental")
-            e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i)
+            e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i+n_good, state="adddefective")
 
-            print("e_val.shape", e_val.shape)
-            print("e_val", e_val)
             print("e_vec.shape", e_vec.shape)
-            print("e_vec", e_vec)
-            plt.figure()
-            plt.plot(e_val)
-            plt.savefig('e_val.png')
+            # print("e_vec", e_vec)
+            print("e_val.shape", e_val.shape)
+            # print("e_val", e_val)
 
             # subspace
             # 次元を落として部分空間を作成
             print("### Calc Subspace")
             sub_vec, sub_val = calc_sub_vec(e_vec, e_val, threshold)
 
-            print(time.time() - end)
+            stime = time.time() - end
+            print("Time : ", f"{stime:.3f}")
 
-            testall(val_loader, model, args, threshold, sub_vec, prefix="test_{}".format(i))
+            testall(val_loader, model, args, threshold, sub_vec, sub_val, prefix="test_{}".format(i))
 
 
-def testall(val_loader, model, args, threshold, sub_vec, prefix=""):
+def testall(val_loader, model, args, threshold, sub_vec, sub_val, prefix=""):
     # -------------------test---------------------------------
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
     outputs_list = []
@@ -562,20 +578,29 @@ def testall(val_loader, model, args, threshold, sub_vec, prefix=""):
     plt.scatter(range(len(d)), d, c=target, cmap=cm.nipy_spectral)
     plt.colorbar()
     plt.title(str(val_loader.dataset.classes))
-    plt.savefig('d_{}_{}.png'.format(prefix, str(threshold)))
+    plt.savefig('D_{}_{}.png'.format(prefix, str(threshold)))
+    plt.close()
+
+    # UMAPの計算
+    # calc_umap(output, target, prefix=prefix)
 
     # ROCとAUCの計算
     labelg = val_loader.dataset.class_to_idx["good"]
     labeld = val_loader.dataset.class_to_idx["defective"]
     roc_label = np.where((target == labelg) | (target == labeld))
     d = d[roc_label]
-    target = target[roc_label]
-    calc_roc(target, d, prefix=prefix)
+    targetd = target[roc_label]
+    calc_roc(targetd, d, prefix=prefix)
+
+    # # 固有値のプロット
+    # plt.figure()
+    # plt.plot(sub_val)
+    # plt.savefig('SUB_VAL_{}.png'.format(prefix))
+    # plt.close()
 
 
 def calc_SVD(features):
     # svd
-    print("SVD", len(features))
     U, s, V = np.linalg.svd(features)
     e_val = s**2 / features.shape[0]
     e_vec = V.T
@@ -583,21 +608,36 @@ def calc_SVD(features):
 
 
 def calc_sub_vec(e_vec, e_val, threshold):
+    print("e_vec.shape", e_vec.shape)
+    print("e_val.shape", e_val.shape)
+    print("e_val", e_val)
+
+    # 固有値の絶対値を取る
+    e_val = np.abs(e_val)
+
     sum_all = np.sum(e_val)
     sum_val = np.array([np.sum(e_val[:i])/sum_all for i in range(1, len(e_val)+1)])
+    # # 固有値の値でソート
+    # sort_index = np.argsort(e_val)[::-1]
+    # e_val = e_val[sort_index]
+    # e_vec = e_vec.T[sort_index].T
+    # 部分空間を作成
     r = int(min(np.where(sum_val >= threshold)[0])+1)
     sub_vec = e_vec.T[:r].T
     sub_val = e_val[:r]
 
     plt.figure()
     plt.plot(sum_val)
-    plt.savefig('sum_e_val.png')
+    plt.savefig('SUM_E_VAL.png')
+    plt.close()
     print("sub_vec.shape", sub_vec.shape)
-    print("sub_vec", sub_vec)
+    # print("sub_vec", sub_vec)
+    print("sub_val.shape", sub_val.shape)
+    print("sub_val", sub_val)
     return sub_vec, sub_val
 
 
-def incremental_PCA(features, sub_vec, sub_val, n):
+def incremental_PCA(features, sub_vec, sub_val, n, state="addgoodonly"):
     h = np.reshape(features[0] - sub_vec @ sub_vec.T @ features[0], (-1, 1))
     h_norm = np.linalg.norm(h)
     h_hat = h / h_norm if h_norm > 0.1 else np.zeros(h.shape)
@@ -609,7 +649,18 @@ def incremental_PCA(features, sub_vec, sub_val, n):
                   [np.zeros((1, lamd.shape[1])), 0]])
     l2 = np.block([[g @ g.T, gamma * g],
                    [gamma * g.T, gamma**2]])
-    ll = (n/(n+1) * l1) + (1/(n+1) * l2)
+
+    # 正常のみに正常を追加するインクリメンタルPCA
+    if state == "addgoodonly":
+        ll = (n/(n+1) * l1) + (1/(n+1) * l2)
+    # 正常を追加するインクリメンタルPCA
+    elif state == "addgood":
+        ll = l1 + (1/(n+1) * l2)
+    # 異常を追加するインクリメンタルPCA
+    elif state == "adddefective":
+        defect_c = 10**-3
+        ll = l1 - (defect_c/(n+1) * l2)
+
     # calc rotation matrix
     e_val, rot = np.linalg.eigh(ll)
     e_val = e_val[::-1]
@@ -650,8 +701,19 @@ def calc_roc(target, d, prefix=""):
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
     plt.grid(True)
-    plt.savefig('roc_{}.png'.format(prefix))
+    plt.savefig('ROC_{}.png'.format(prefix))
+    plt.close()
     print("auc", auc, d.shape)
+
+
+def calc_umap(features, target, prefix=""):
+    # umap
+    embedding = umap.UMAP(n_neighbors=5, random_state=0).fit_transform(features)
+    plt.figure()
+    plt.scatter(embedding[:, 0], embedding[:, 1], c=target, cmap=cm.nipy_spectral)
+    plt.colorbar()
+    plt.savefig('UMAP_{}.png'.format(prefix))
+    plt.close()
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
