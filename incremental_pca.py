@@ -294,10 +294,16 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_sampler = KFoldSampler(train_dataset, seed=10, k=5)
 
-    train_loader = torch.utils.data.DataLoader(
+    train_loader1000 = torch.utils.data.DataLoader(
         train_dataset,
         sampler=train_sampler,
-        batch_size=args.batch_size, shuffle=False,
+        batch_size=1000, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
+
+    train_loader1 = torch.utils.data.DataLoader(
+        train_dataset,
+        sampler=train_sampler,
+        batch_size=1, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
     val_dataset = datasets.ImageFolder(valdir, transforms.Compose([
@@ -324,20 +330,27 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_k(k_count)
             print("train index", train_sampler.train)
             print("val_index", train_sampler.val)
-            d_average += train_good(train_loader, val_loader, model, criterion, args, k_count, test_threshold)
+            d_result, (_, _) = train_good(train_loader1000, val_loader,
+                                          model, criterion, args,
+                                          k_count, test_threshold, "good_train")
+            d_average += d_result
         threshold_results[test_threshold] = d_average/args.kfold
         print(str(test_threshold), d_average/args.kfold)
     print(threshold_results)
     threshold = min(threshold_results, key=threshold_results.get)
     print(threshold, threshold_results[threshold])
 
-    # 決めたしきい値を用いてもう一度正常部分空間をすべての正常データで作る
-    # それに対して以上データを追加していく
-    train_defective(train_loader, val_loader, model, args, threshold)
+    # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
+    _, (sub_vec, sub_val) = train_good(train_loader1000, val_loader,
+                                       model, criterion, args,
+                                       k_count, test_threshold, "good")
+
+    # それに対して異常データを追加していく
+    train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val)
 
 
 def train_good(train_loader, val_loader, model,
-               criterion, args, k_count, test_threshold):
+               criterion, args, k_count, test_threshold, sampler_state):
 
     # switch to evaluate mode
     model.eval()
@@ -347,10 +360,10 @@ def train_good(train_loader, val_loader, model,
     with torch.no_grad():
         sub_vec = None
         sub_val = None
-        train_loader.sampler.set_state("good_train")
+        train_loader.sampler.set_state(sampler_state)
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
             end = time.time()
-            print("\n#" + "-"*30 + ' ' + str(i) + 'epoch ' + "-"*30 + "#")
+            print("\n#" + "="*30 + ' train_good SVD ' + "="*30 + "#")
             # Reverse order
             images = torch.from_numpy(images.numpy()[::-1].copy())
             target = torch.from_numpy(target.numpy()[::-1].copy())
@@ -379,6 +392,7 @@ def train_good(train_loader, val_loader, model,
 
             # インクリメンタルPCAを用いた更新
             else:
+                assert False
                 # incremental
                 print("Incremental")
                 e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i)
@@ -397,6 +411,9 @@ def train_good(train_loader, val_loader, model,
             sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold)
 
             print(time.time() - end)
+
+            if sampler_state == 'good':
+                testall(val_loader, model, args, test_threshold, sub_vec, prefix="good")
 
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
@@ -462,20 +479,19 @@ def train_good(train_loader, val_loader, model,
         # plt.colorbar()
         # plt.savefig('d_{}_{}.png'.format(str(test_threshold), k_count))
 
-    return np.mean(good_d) + good_stddev*10
+    return np.mean(good_d) + good_stddev*10, (sub_vec, sub_val)
 
 
-def train_defective(train_loader, val_loader, model, args, threshold):
+def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val):
 
     # switch to evaluate mode
     model.eval()
 
     # Train
-    # 正常データのみを用いたトレーニング
+    # 異常データを追加していく
     with torch.no_grad():
-        sub_vec = None
-        sub_val = None
-        train_loader.sampler.set_state("good")  # 正常データ全て
+        assert train_loader.batch_size == 1
+        train_loader.sampler.set_state("defective")  # 異常データを１枚ずつ
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
             end = time.time()
             print("\n#" + "-"*30 + ' ' + str(i) + 'epoch ' + "-"*30 + "#")
@@ -494,16 +510,11 @@ def train_defective(train_loader, val_loader, model, args, threshold):
 
             print("### Calc eigenvalue, eigenvector")
             print("input shape (model output)", output.shape)
-            # SVDを用いた正常部分空間作成
-            if (i == 0):
-                e_vec, e_val = calc_SVD(output)
 
             # インクリメンタルPCAを用いた更新
-            else:
-                assert False
-                # incremental
-                print("Incremental")
-                e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i)
+            # incremental
+            print("Incremental")
+            e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i)
 
             print("e_val.shape", e_val.shape)
             print("e_val", e_val)
@@ -520,10 +531,10 @@ def train_defective(train_loader, val_loader, model, args, threshold):
 
             print(time.time() - end)
 
-            test(val_loader, model, args, threshold, sub_vec)
+            testall(val_loader, model, args, threshold, sub_vec, prefix="test_{}".format(i))
 
 
-def test(val_loader, model, args, threshold, sub_vec):
+def testall(val_loader, model, args, threshold, sub_vec, prefix=""):
     # -------------------test---------------------------------
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
     outputs_list = []
@@ -551,7 +562,7 @@ def test(val_loader, model, args, threshold, sub_vec):
     plt.scatter(range(len(d)), d, c=target, cmap=cm.nipy_spectral)
     plt.colorbar()
     plt.title(str(val_loader.dataset.classes))
-    plt.savefig('test_d_{}.png'.format(str(threshold)))
+    plt.savefig('d_{}_{}.png'.format(prefix, str(threshold)))
 
     # ROCとAUCの計算
     labelg = val_loader.dataset.class_to_idx["good"]
@@ -559,7 +570,7 @@ def test(val_loader, model, args, threshold, sub_vec):
     roc_label = np.where((target == labelg) | (target == labeld))
     d = d[roc_label]
     target = target[roc_label]
-    calc_roc(target, d)
+    calc_roc(target, d, prefix=prefix)
 
 
 def calc_SVD(features):
@@ -627,7 +638,7 @@ def calc_errorval(features, sub_vec):
     return dist, stddev
 
 
-def calc_roc(target, d):
+def calc_roc(target, d, prefix=""):
 
     fpr, tpr, thresholds = metrics.roc_curve(target, (d*(-1)))
     auc = metrics.roc_auc_score(target, (d*(-1)))
@@ -639,7 +650,7 @@ def calc_roc(target, d):
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
     plt.grid(True)
-    plt.savefig('roc.png')
+    plt.savefig('roc_{}.png'.format(prefix))
     print("auc", auc, d.shape)
 
 
