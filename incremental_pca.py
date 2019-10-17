@@ -467,16 +467,16 @@ def train_good(train_loader, val_loader, model,
             # subspace
             # 次元を落として部分空間を作成
             print("### Calc Subspace")
+            # 最初に頭から３つを落とす
+            e_vec = e_vec.T[3:].T
+            e_val = e_val[3:]
+            # 寄与率に応じて後ろを落とす
             sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold, args)
 
             print(time.time() - end)
 
             if sampler_state == 'good':
                 testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good")
-
-            # # 1番目のベクトルを削除
-            # sub_vec = sub_vec.T[1:].T
-            # sub_val = sub_val[1:]
 
             # 画像を表示したい
             for i, vec_img in enumerate(sub_vec.T):
