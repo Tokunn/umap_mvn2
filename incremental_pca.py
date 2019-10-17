@@ -91,7 +91,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 parser.add_argument('--kfold', default=5, type=int)
 parser.add_argument('--prmc', default=0.5, type=float)
 parser.add_argument('--pngdir', default='.', type=str)
-parser.add_argument('--del3head', action='store_true')
+parser.add_argument('--delheadvec', default=0, type=int)
 
 best_acc1 = 0
 
@@ -469,10 +469,10 @@ def train_good(train_loader, val_loader, model,
             # subspace
             # 次元を落として部分空間を作成
             print("### Calc Subspace")
-            if args.del3head:
-                # 最初に頭から３つを落とす
-                e_vec = e_vec.T[3:].T
-                e_val = e_val[3:]
+            if args.delheadvec:
+                # 最初に頭から指定個の基底を落とす
+                e_vec = e_vec.T[args.delheadvec:].T
+                e_val = e_val[args.delheadvec:]
             # 寄与率に応じて後ろを落とす
             sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold, args)
 
