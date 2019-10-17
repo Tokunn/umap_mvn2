@@ -631,6 +631,7 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
 
 
 def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix=""):
+    start_time = time.time()
     # -------------------test---------------------------------
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
     outputs_list = []
@@ -711,6 +712,8 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
         writer = csv.writer(f)
         for s in csvdata:
             writer.writerow(s)
+
+    print("Test Time : {}".format(time.time() - start_time))
 
 
 def calc_SVD(features):
