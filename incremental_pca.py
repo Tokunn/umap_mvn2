@@ -1,5 +1,6 @@
 import argparse
 import os
+import csv
 import shutil
 import random
 import time
@@ -22,6 +23,7 @@ import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
+import torchvision
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
@@ -111,6 +113,14 @@ def DEBUG_SHOW(images):
         plt.close()
 
 
+def saveimg(images, args, prefix=""):
+    for i, img in enumerate(images):
+        plt.figure()
+        plt.imshow(np.transpose(img, (1, 2, 0)))
+        plt.savefig(os.path.join(args.pngdir, prefix+str(i)+'.png'))
+        plt.close()
+
+
 class KFoldSampler(torch.utils.data.Sampler):
 
     def __init__(self, data_source, k=5, seed=None):
@@ -160,6 +170,28 @@ class KFoldSampler(torch.utils.data.Sampler):
             return len(self.defective_index)
         else:
             assert True
+
+
+class ImageFolderPath(torchvision.datasets.folder.DatasetFolder):
+
+    def __init__(self, root, transform=None, target_transform=None,
+                 loader=torchvision.datasets.folder.default_loader, is_valid_file=None):
+        super(ImageFolderPath, self).__init__(
+                root, loader,
+                torchvision.datasets.folder.IMG_EXTENSIONS if is_valid_file is None else None,
+                transform=transform,
+                target_transform=target_transform,
+                is_valid_file=is_valid_file)
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target, path
 
 
 def main():
@@ -326,7 +358,7 @@ def main_worker(gpu, ngpus_per_node, args):
         batch_size=1, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    val_dataset = datasets.ImageFolder(valdir, transforms.Compose([
+    val_dataset = ImageFolderPath(valdir, transforms.Compose([
             transforms.Resize(224),
             transforms.Resize(RESIZE),  # 画像を表示したい
             # transforms.Grayscale(),
@@ -542,6 +574,7 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
         p0 = None
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
             learned_defect_image.append(images.numpy()[0])
+            saveimg(learned_defect_image, args, prefix="learned")
             # DEBUG_SHOW(images)
             end = time.time()
             print("\n#" + "-"*30 + ' ' + str(i) + 'train defective ' + "-"*30 + "#")
@@ -602,7 +635,8 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
     outputs_list = []
     targets_list = []
-    for i, (images, target) in enumerate(val_loader):
+    path_list = []
+    for i, (images, target, path) in enumerate(val_loader):
         if args.gpu is not None:
             images = images.cuda(args.gpu, non_blocking=True)
         target = target.cuda(args.gpu, non_blocking=True)
@@ -615,6 +649,7 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
         target = target.cpu()
         outputs_list.append(output)
         targets_list.append(target)
+        path_list.append(path)
 
     output = torch.cat(outputs_list).numpy()
     target = torch.cat(targets_list).numpy()
@@ -661,7 +696,7 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     target[learned_indices] = 5
     target_plot = target
 
-    # 異常度のプロット
+    # 異常度のプロットと保存
     plt.figure()
     # plt.ylim(0, 1)
     # plt.ylim(0, 0.2)
@@ -670,6 +705,12 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     plt.title(str(val_loader.dataset.classes))
     plt.savefig(os.path.join(args.pngdir, 'D_{}_{}.png'.format(prefix, str(threshold))))
     plt.close()
+    with open(os.path.join(args.pngdir, "d_list.csv"), "w") as f:
+        temp = (d, target_plot, path_list[0])
+        csvdata = list(zip(*temp))
+        writer = csv.writer(f)
+        for s in csvdata:
+            writer.writerow(s)
 
 
 def calc_SVD(features):
