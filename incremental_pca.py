@@ -374,7 +374,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # しきい値の決定
     thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
-    thresholds_list = DEBUG([0.999])
+    # thresholds_list = DEBUG([0.999])
     threshold_results = {}
     for test_threshold in thresholds_list:
         d_average = 0
@@ -419,7 +419,7 @@ def train_good(train_loader, val_loader, model,
             assert i == 0
             # DEBUG_SHOW(images)
             end = time.time()
-            print("\n#" + "="*30 + ' train_good SVD ' + "="*30 + "#")
+            print("\n#" + "="*30 + ' train_good SVD ' + str(test_threshold) + '/' + str(k_count) + ' ' + "="*30 + "#")
             # Reverse order
             images = torch.from_numpy(images.numpy()[::-1].copy())
             target = torch.from_numpy(target.numpy()[::-1].copy())
