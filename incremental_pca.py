@@ -477,6 +477,8 @@ def train_good(train_loader, val_loader, model,
 
             if sampler_state == 'good':
                 testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good")
+            elif k_count == 0:
+                testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good_crossval")
 
             # 画像を表示したい
             for i, vec_img in enumerate(sub_vec.T):
