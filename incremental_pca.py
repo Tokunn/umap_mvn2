@@ -396,7 +396,7 @@ def main_worker(gpu, ngpus_per_node, args):
     # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
     _, (sub_vec, sub_val) = train_good(train_loader1000, val_loader,
                                        model, criterion, args,
-                                       k_count, test_threshold, "good")
+                                       k_count, threshold, "good")
 
     # それに対して異常データを追加していく
     train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val)
