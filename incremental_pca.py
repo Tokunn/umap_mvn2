@@ -1,7 +1,7 @@
 import argparse
 import os
-import random
 import shutil
+import random
 import time
 import warnings
 import umap
@@ -25,6 +25,8 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+
+RESIZE = 50
 
 
 model_names = sorted(name for name in models.__dict__
@@ -85,6 +87,8 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'fastest way to use PyTorch for either single node or'
                          ' multi node data parallel training')
 parser.add_argument('--kfold', default=5, type=int)
+parser.add_argument('--prmc', default=0.5, type=float)
+parser.add_argument('--pngdir', default='.', type=str)
 
 best_acc1 = 0
 
@@ -198,6 +202,10 @@ def main_worker(gpu, ngpus_per_node, args):
     global best_acc1
     args.gpu = gpu
 
+    if os.path.exists(args.pngdir):
+        shutil.rmtree(args.pngdir)
+    os.makedirs(args.pngdir, exist_ok=True)
+
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
 
@@ -296,6 +304,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
             transforms.Resize(224),
+            transforms.Resize(RESIZE),  # 画像を表示したい
             # transforms.Grayscale(),
             transforms.ToTensor(),
             # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
@@ -319,6 +328,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     val_dataset = datasets.ImageFolder(valdir, transforms.Compose([
             transforms.Resize(224),
+            transforms.Resize(RESIZE),  # 画像を表示したい
             # transforms.Grayscale(),
             transforms.ToTensor(),
             # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
@@ -332,7 +342,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # しきい値の決定
     thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
-    # thresholds_list = DEBUG([0.99])
+    thresholds_list = DEBUG([0.999])
     threshold_results = {}
     for test_threshold in thresholds_list:
         d_average = 0
@@ -373,6 +383,7 @@ def train_good(train_loader, val_loader, model,
         sub_val = None
         train_loader.sampler.set_state(sampler_state)
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
+            learned_good_image = images.numpy()
             assert i == 0
             # DEBUG_SHOW(images)
             end = time.time()
@@ -386,7 +397,9 @@ def train_good(train_loader, val_loader, model,
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            output = model(images)
+            # output = model(images)
+            # 画像を表示したい
+            output = images.reshape(images.shape[0], -1)
             output = output.cpu().numpy()
             target = target.cpu().numpy()
 
@@ -422,12 +435,25 @@ def train_good(train_loader, val_loader, model,
             # subspace
             # 次元を落として部分空間を作成
             print("### Calc Subspace")
-            sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold)
+            sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold, args)
 
             print(time.time() - end)
 
             if sampler_state == 'good':
-                testall(val_loader, model, args, test_threshold, sub_vec, sub_val, prefix="good")
+                testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good")
+
+            # # 1番目のベクトルを削除
+            # sub_vec = sub_vec.T[1:].T
+            # sub_val = sub_val[1:]
+
+            # 画像を表示したい
+            for i, vec_img in enumerate(sub_vec.T):
+                vec_img = np.reshape(vec_img, (3, RESIZE, RESIZE))
+                vec_img = np.transpose(vec_img, (1, 2, 0))
+                vec_img = (vec_img-vec_img.min()) / (vec_img.max()-vec_img.min())
+                plt.imshow(vec_img)
+                plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
+                plt.close()
 
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
@@ -448,7 +474,9 @@ def train_good(train_loader, val_loader, model,
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            output = model(images)
+            # output = model(images)
+            # 画像を表示したい
+            output = images.reshape(images.shape[0], -1)
             output = output.cpu()
             target = target.cpu()
             # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
@@ -509,7 +537,11 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
         train_loader.sampler.set_state("good")
         n_good = len(train_loader)
         train_loader.sampler.set_state("defective")  # 異常データを１枚ずつ
+        # 異常の学習に使用した画像をテスト用に保存
+        learned_defect_image = []
+        p0 = None
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
+            learned_defect_image.append(images.numpy()[0])
             # DEBUG_SHOW(images)
             end = time.time()
             print("\n#" + "-"*30 + ' ' + str(i) + 'train defective ' + "-"*30 + "#")
@@ -522,7 +554,9 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            output = model(images)
+            # output = model(images)
+            # 画像を表示したい
+            output = images.reshape(images.shape[0], -1)
             output = output.cpu().numpy()
             target = target.cpu().numpy()
 
@@ -532,7 +566,7 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             # インクリメンタルPCAを用いた更新
             # incremental
             print("Incremental")
-            e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i+n_good, state="adddefective")
+            e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i+n_good, args, state="adddefective")
 
             print("e_vec.shape", e_vec.shape)
             # print("e_vec", e_vec)
@@ -540,17 +574,30 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             # print("e_val", e_val)
 
             # subspace
-            # 次元を落として部分空間を作成
-            print("### Calc Subspace")
-            sub_vec, sub_val = calc_sub_vec(e_vec, e_val, threshold)
+            # # 次元を落として部分空間を作成
+            # print("### Calc Subspace")
+            # sub_vec, sub_val = calc_sub_vec(e_vec, e_val, threshold, args)
+            # # 落とさない
+            # sub_vec, sub_val = e_vec, e_val
+            # 最後を落とす
+            sub_vec = e_vec.T[:-1].T
+            sub_val = e_val[:-1]
+
+            # 部分空間の更新を確認
+            p1 = sub_vec @ sub_vec.T
+            if p0 is not None:
+                p_e_val, _ = np.linalg.eigh(p0 @ p1 @ p0)
+                p_e_val = p_e_val[::-1]
+                print(p_e_val[:len(sub_val)])
+            p0 = p1
 
             stime = time.time() - end
             print("Time : ", f"{stime:.3f}")
 
-            testall(val_loader, model, args, threshold, sub_vec, sub_val, prefix="test_{}".format(i))
+            testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_defect_image, prefix="test_{}".format(i))
 
 
-def testall(val_loader, model, args, threshold, sub_vec, sub_val, prefix=""):
+def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix=""):
     # -------------------test---------------------------------
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
     outputs_list = []
@@ -561,7 +608,9 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, prefix=""):
         target = target.cuda(args.gpu, non_blocking=True)
 
         # compute output
-        output = model(images)
+        # output = model(images)
+        # 画像を表示したい
+        output = images.reshape(images.shape[0], -1)
         output = output.cpu()
         target = target.cpu()
         outputs_list.append(output)
@@ -573,14 +622,6 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, prefix=""):
     print("### Calc Error")
     d, _ = calc_errorval(output, sub_vec)
 
-    plt.figure()
-    plt.ylim(0, 1)
-    plt.scatter(range(len(d)), d, c=target, cmap=cm.nipy_spectral)
-    plt.colorbar()
-    plt.title(str(val_loader.dataset.classes))
-    plt.savefig('D_{}_{}.png'.format(prefix, str(threshold)))
-    plt.close()
-
     # UMAPの計算
     # calc_umap(output, target, prefix=prefix)
 
@@ -588,15 +629,47 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, prefix=""):
     labelg = val_loader.dataset.class_to_idx["good"]
     labeld = val_loader.dataset.class_to_idx["defective"]
     roc_label = np.where((target == labelg) | (target == labeld))
-    d = d[roc_label]
-    targetd = target[roc_label]
-    calc_roc(targetd, d, prefix=prefix)
+    roc_d = d[roc_label]
+    roc_targetd = target[roc_label]
+    calc_roc(roc_targetd, roc_d, args, prefix=prefix)
 
     # # 固有値のプロット
     # plt.figure()
     # plt.plot(sub_val)
     # plt.savefig('SUB_VAL_{}.png'.format(prefix))
     # plt.close()
+
+    # 学習済みの画像も追加
+    # output_learned = model(torch.from_numpy(np.asarray(learned_image)))
+    # output_learned = output_learned.cpu().numpy()
+    # d_learned, _ = calc_errorval(output_learned, sub_vec)
+    # target_learned = np.full(len(d_learned), 5)
+    # d_plot = np.concatenate((d, d_learned))
+    # target_plot = np.concatenate((target, target_learned))
+    # print(d.shape)
+    # print(np.asarray(d_learned).shape)
+    # print(d_plot.shape)
+    # print(target.shape)
+    # print(np.asarray(target_learned).shape)
+    # print(target_plot.shape)
+    learned_indices = []
+    for i, img in enumerate(images):
+        for l_img in learned_image:
+            if np.allclose(img.numpy(), l_img):
+                learned_indices.append(i)
+                break
+    target[learned_indices] = 5
+    target_plot = target
+
+    # 異常度のプロット
+    plt.figure()
+    # plt.ylim(0, 1)
+    # plt.ylim(0, 0.2)
+    plt.scatter(range(len(d)), d, c=target_plot, cmap=cm.nipy_spectral)
+    plt.colorbar()
+    plt.title(str(val_loader.dataset.classes))
+    plt.savefig(os.path.join(args.pngdir, 'D_{}_{}.png'.format(prefix, str(threshold))))
+    plt.close()
 
 
 def calc_SVD(features):
@@ -607,13 +680,13 @@ def calc_SVD(features):
     return e_vec, e_val
 
 
-def calc_sub_vec(e_vec, e_val, threshold):
+def calc_sub_vec(e_vec, e_val, threshold, args):
     print("e_vec.shape", e_vec.shape)
     print("e_val.shape", e_val.shape)
     print("e_val", e_val)
 
     # 固有値の絶対値を取る
-    e_val = np.abs(e_val)
+    # e_val = np.abs(e_val)
 
     sum_all = np.sum(e_val)
     sum_val = np.array([np.sum(e_val[:i])/sum_all for i in range(1, len(e_val)+1)])
@@ -628,7 +701,7 @@ def calc_sub_vec(e_vec, e_val, threshold):
 
     plt.figure()
     plt.plot(sum_val)
-    plt.savefig('SUM_E_VAL.png')
+    plt.savefig(os.path.join(args.pngdir, 'SUM_E_VAL.png'))
     plt.close()
     print("sub_vec.shape", sub_vec.shape)
     # print("sub_vec", sub_vec)
@@ -637,18 +710,20 @@ def calc_sub_vec(e_vec, e_val, threshold):
     return sub_vec, sub_val
 
 
-def incremental_PCA(features, sub_vec, sub_val, n, state="addgoodonly"):
+def incremental_PCA(features, sub_vec, sub_val, n, args, state="addgoodonly"):
     h = np.reshape(features[0] - sub_vec @ sub_vec.T @ features[0], (-1, 1))
     h_norm = np.linalg.norm(h)
     h_hat = h / h_norm if h_norm > 0.1 else np.zeros(h.shape)
     g = np.reshape(sub_vec.T @ features[0], (-1, 1))
     gamma = h_hat.T @ features[0]
     # calc L
-    lamd = np.diag(sub_val)
+    lamd = np.diag(sub_val)  # del new vec
     l1 = np.block([[lamd, np.zeros((lamd.shape[0], 1))],
                   [np.zeros((1, lamd.shape[1])), 0]])
+    # l1 = lamd  # del new vec
     l2 = np.block([[g @ g.T, gamma * g],
                    [gamma * g.T, gamma**2]])
+    # l2 = g.reshape(-1,1) @ g.reshape(1,-1)
 
     # 正常のみに正常を追加するインクリメンタルPCA
     if state == "addgoodonly":
@@ -658,14 +733,16 @@ def incremental_PCA(features, sub_vec, sub_val, n, state="addgoodonly"):
         ll = l1 + (1/(n+1) * l2)
     # 異常を追加するインクリメンタルPCA
     elif state == "adddefective":
-        defect_c = 10**-3
+        defect_c = args.prmc
         ll = l1 - (defect_c/(n+1) * l2)
 
     # calc rotation matrix
     e_val, rot = np.linalg.eigh(ll)
     e_val = e_val[::-1]
     # update e_vec
+    print(rot)
     e_vec = np.block([sub_vec, h_hat]) @ rot
+    # e_vec = sub_vec @ rot  # del new vec
     e_vec = e_vec.T[::-1].T
     return e_vec, e_val
 
@@ -678,8 +755,19 @@ def calc_errorval(features, sub_vec):
     # dist = np.linalg.norm(output-y, axis=1)
     # cos
     dist = [np.inner(oi, yi) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(features, y)]
+    # dist = []
+    # for oi, yi in zip(features, y):
+    #     norm_oi = np.linalg.norm(oi)
+    #     norm_yi = np.linalg.norm(yi)
+    #     if (norm_yi < 1e-10):
+    #         dist.append(0)
+    #     else:
+    #         dist.append(np.inner(oi, yi) / (norm_oi * norm_yi))
+
     # sin
-    dist = np.sqrt(1-np.power(dist, 2))
+    dist = np.clip(np.asarray(dist)**2, 0, 1)
+    dist = 1-dist
+    # dist = np.sqrt(1-np.power(dist, 2))
     print(dist)
 
     # 分散
@@ -689,7 +777,7 @@ def calc_errorval(features, sub_vec):
     return dist, stddev
 
 
-def calc_roc(target, d, prefix=""):
+def calc_roc(target, d, args, prefix=""):
 
     fpr, tpr, thresholds = metrics.roc_curve(target, (d*(-1)))
     auc = metrics.roc_auc_score(target, (d*(-1)))
@@ -701,18 +789,18 @@ def calc_roc(target, d, prefix=""):
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
     plt.grid(True)
-    plt.savefig('ROC_{}.png'.format(prefix))
+    plt.savefig(os.path.join(args.pngdir, 'ROC_{}.png'.format(prefix)))
     plt.close()
     print("auc", auc, d.shape)
 
 
-def calc_umap(features, target, prefix=""):
+def calc_umap(features, target, args, prefix=""):
     # umap
     embedding = umap.UMAP(n_neighbors=5, random_state=0).fit_transform(features)
     plt.figure()
     plt.scatter(embedding[:, 0], embedding[:, 1], c=target, cmap=cm.nipy_spectral)
     plt.colorbar()
-    plt.savefig('UMAP_{}.png'.format(prefix))
+    plt.savefig(os.path.join(args.pngdir, 'UMAP_{}.png'.format(prefix)))
     plt.close()
 
 
