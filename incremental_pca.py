@@ -405,6 +405,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
 def train_good(train_loader, val_loader, model,
                criterion, args, k_count, test_threshold, sampler_state):
+    start_time = time.time()
 
     # switch to evaluate mode
     model.eval()
@@ -557,6 +558,7 @@ def train_good(train_loader, val_loader, model,
         # plt.colorbar()
         # plt.savefig('d_{}_{}.png'.format(str(test_threshold), k_count))
 
+    print("Train good Time {}".format(time.time() - start_time))
     return np.mean(good_d) + good_stddev*10, (sub_vec, sub_val)
 
 
