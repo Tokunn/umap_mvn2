@@ -29,6 +29,7 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 
 RESIZE = 50
+DEL_HEAD3_EVEC = False
 
 
 model_names = sorted(name for name in models.__dict__
@@ -467,9 +468,10 @@ def train_good(train_loader, val_loader, model,
             # subspace
             # 次元を落として部分空間を作成
             print("### Calc Subspace")
-            # 最初に頭から３つを落とす
-            e_vec = e_vec.T[3:].T
-            e_val = e_val[3:]
+            if DEL_HEAD3_EVEC:
+                # 最初に頭から３つを落とす
+                e_vec = e_vec.T[3:].T
+                e_val = e_val[3:]
             # 寄与率に応じて後ろを落とす
             sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold, args)
 
