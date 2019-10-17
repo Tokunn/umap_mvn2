@@ -608,11 +608,11 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
 
             # subspace
             # # 次元を落として部分空間を作成
-            # print("### Calc Subspace")
+            # # print("### Calc Subspace")
             # sub_vec, sub_val = calc_sub_vec(e_vec, e_val, threshold, args)
             # # 落とさない
             # sub_vec, sub_val = e_vec, e_val
-            # 最後を落とす
+            # 異常である最後を落とす
             sub_vec = e_vec.T[:-1].T
             sub_val = e_val[:-1]
 
