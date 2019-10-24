@@ -1,0 +1,7 @@
+*.png
+.ipynb_checkpoints/
+.python-version
+__pycache__/
+dataset/
+jobscript/josb*
+jobscript/*.o*

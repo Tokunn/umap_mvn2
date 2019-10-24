@@ -92,6 +92,7 @@ parser.add_argument('--kfold', default=5, type=int)
 parser.add_argument('--prmc', default=0.5, type=float)
 parser.add_argument('--pngdir', default='.', type=str)
 parser.add_argument('--delheadvec', default=0, type=int)
+parser.add_argument('--uselayer', default=0, type=int)
 
 best_acc1 = 0
 
@@ -263,8 +264,10 @@ def main_worker(gpu, ngpus_per_node, args):
     # mobilenetv2
     model = torch.hub.load('pytorch/vision', 'mobilenet_v2', pretrained=True)
     model.classifier = nn.Sequential(*list(model.classifier.children())[:-2])
-    # model.features = nn.Sequential(*list(model.features.children())[:6])
-    # print(model)
+    if args.uselayer:
+        model.features = nn.Sequential(*list(model.features.children())[:args.uselayer])
+        print(model)
+        print(len(model.features))
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -335,14 +338,21 @@ def main_worker(gpu, ngpus_per_node, args):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-    train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
-            transforms.Resize(224),
-            transforms.Resize(RESIZE),  # 画像を表示したい
-            # transforms.Grayscale(),
-            transforms.ToTensor(),
-            # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
-            normalize
-        ]))
+    if args.uselayer:
+        train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
+                transforms.Resize(224),
+                # transforms.Grayscale(),
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
+                normalize
+            ]))
+    else:
+        train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
+                transforms.Resize(RESIZE),  # 画像を表示したい
+                # transforms.Grayscale(),
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
+            ]))
     print("Train", train_dataset.classes)
 
     train_sampler = KFoldSampler(train_dataset, seed=1, k=5)
@@ -359,14 +369,21 @@ def main_worker(gpu, ngpus_per_node, args):
         batch_size=1, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    val_dataset = ImageFolderPath(valdir, transforms.Compose([
-            transforms.Resize(224),
-            transforms.Resize(RESIZE),  # 画像を表示したい
-            # transforms.Grayscale(),
-            transforms.ToTensor(),
-            # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
-            normalize,
-        ]))
+    if args.uselayer:
+        val_dataset = ImageFolderPath(valdir, transforms.Compose([
+                transforms.Resize(224),
+                # transforms.Grayscale(),
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
+                normalize,
+            ]))
+    else:
+        val_dataset = ImageFolderPath(valdir, transforms.Compose([
+                transforms.Resize(RESIZE),  # 画像を表示したい
+                # transforms.Grayscale(),
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
+            ]))
     print("Test", val_dataset.classes)
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
@@ -431,9 +448,11 @@ def train_good(train_loader, val_loader, model,
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            # output = model(images)
-            # 画像を表示したい
-            output = images.reshape(images.shape[0], -1)
+            if args.uselayer:
+                output = model(images)
+            else:
+                # 画像を表示したい
+                output = images.reshape(images.shape[0], -1)
             output = output.cpu().numpy()
             target = target.cpu().numpy()
 
@@ -483,14 +502,15 @@ def train_good(train_loader, val_loader, model,
             elif k_count == 0:
                 testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good_crossval")
 
-            # 画像を表示したい
-            for i, vec_img in enumerate(sub_vec.T):
-                vec_img = np.reshape(vec_img, (3, RESIZE, RESIZE))
-                vec_img = np.transpose(vec_img, (1, 2, 0))
-                vec_img = (vec_img-vec_img.min()) / (vec_img.max()-vec_img.min())
-                plt.imshow(vec_img)
-                plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
-                plt.close()
+            if not args.uselayer:
+                # 画像を表示したい
+                for i, vec_img in enumerate(sub_vec.T):
+                    vec_img = np.reshape(vec_img, (3, RESIZE, RESIZE))
+                    vec_img = np.transpose(vec_img, (1, 2, 0))
+                    vec_img = (vec_img-vec_img.min()) / (vec_img.max()-vec_img.min())
+                    plt.imshow(vec_img)
+                    plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
+                    plt.close()
 
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
@@ -511,9 +531,11 @@ def train_good(train_loader, val_loader, model,
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            # output = model(images)
-            # 画像を表示したい
-            output = images.reshape(images.shape[0], -1)
+            if args.uselayer:
+                output = model(images)
+            else:
+                # 画像を表示したい
+                output = images.reshape(images.shape[0], -1)
             output = output.cpu()
             target = target.cpu()
             # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
@@ -593,9 +615,11 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            # output = model(images)
-            # 画像を表示したい
-            output = images.reshape(images.shape[0], -1)
+            if args.uselayer:
+                output = model(images)
+            else:
+                # 画像を表示したい
+                output = images.reshape(images.shape[0], -1)
             output = output.cpu().numpy()
             target = target.cpu().numpy()
 
@@ -649,9 +673,11 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
         target = target.cuda(args.gpu, non_blocking=True)
 
         # compute output
-        # output = model(images)
-        # 画像を表示したい
-        output = images.reshape(images.shape[0], -1)
+        if args.uselayer:
+            output = model(images)
+        else:
+            # 画像を表示したい
+            output = images.reshape(images.shape[0], -1)
         output = output.cpu()
         target = target.cpu()
         outputs_list.append(output)
