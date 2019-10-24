@@ -401,9 +401,9 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_k(k_count)
             print("train index", train_sampler.train)
             print("val_index", train_sampler.val)
-            d_result, (_, _) = train_good(train_loader1000, val_loader,
-                                          model, criterion, args,
-                                          k_count, test_threshold, "good_train")
+            d_result = train_good(train_loader1000, val_loader,
+                                  model, criterion, args,
+                                  k_count, test_threshold, "good_train")
             d_average += d_result
         threshold_results[test_threshold] = d_average/args.kfold
         print(str(test_threshold), d_average/args.kfold)
@@ -412,9 +412,9 @@ def main_worker(gpu, ngpus_per_node, args):
     print(threshold, threshold_results[threshold])
 
     # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
-    _, (sub_vec, sub_val) = train_good(train_loader1000, val_loader,
-                                       model, criterion, args,
-                                       k_count, threshold, "good")
+    sub_vec, sub_val = train_good(train_loader1000, val_loader,
+                                  model, criterion, args,
+                                  k_count, threshold, "good")
 
     # それに対して異常データを追加していく
     train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val)
@@ -512,6 +512,10 @@ def train_good(train_loader, val_loader, model,
                     plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
                     plt.close()
 
+        if sampler_state == 'good':
+            print("Train good Time {}".format(time.time() - start_time))
+            return sub_vec, sub_val
+
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
         # embedding = umap.UMAP(n_neighbors=5, random_state=0).fit_transform(output)
@@ -581,7 +585,7 @@ def train_good(train_loader, val_loader, model,
         # plt.savefig('d_{}_{}.png'.format(str(test_threshold), k_count))
 
     print("Train good Time {}".format(time.time() - start_time))
-    return np.mean(good_d) + good_stddev*10, (sub_vec, sub_val)
+    return np.mean(good_d) + good_stddev*10
 
 
 def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val):
