@@ -196,6 +196,24 @@ class ImageFolderPath(torchvision.datasets.folder.DatasetFolder):
         return sample, target, path
 
 
+class SaveAUCGraph(object):
+
+    def __init__(self, pngpath):
+        self.pngpath = pngpath
+        self.auclist = []
+
+    def add(self, auc):
+        self.auclist.append(auc)
+        self.save()
+
+    def save(self):
+        plt.figure()
+        plt.plot(self.auclist, label="Max = %.2f" % max(self.auclist))
+        plt.legend()
+        plt.savefig(os.path.join(self.pngpath, 'AUClog{}.png'.format(os.path.basename(self.pngpath))))
+        plt.close()
+
+
 def main():
     args = parser.parse_args()
 
@@ -390,6 +408,8 @@ def main_worker(gpu, ngpus_per_node, args):
         batch_size=args.val_batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
+    aucg = SaveAUCGraph(args.pngdir)
+
     # しきい値の決定
     thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
     # thresholds_list = DEBUG([0.999])
@@ -414,14 +434,14 @@ def main_worker(gpu, ngpus_per_node, args):
     # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
     sub_vec, sub_val = train_good(train_loader1000, val_loader,
                                   model, criterion, args,
-                                  k_count, threshold, "good")
+                                  k_count, threshold, "good", aucg=aucg)
 
     # それに対して異常データを追加していく
-    train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val)
+    train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, aucg=aucg)
 
 
 def train_good(train_loader, val_loader, model,
-               criterion, args, k_count, test_threshold, sampler_state):
+               criterion, args, k_count, test_threshold, sampler_state, aucg=None):
     start_time = time.time()
 
     # switch to evaluate mode
@@ -501,7 +521,7 @@ def train_good(train_loader, val_loader, model,
                 testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good")
             elif k_count == 0:
                 testall(val_loader, model, args, test_threshold,
-                        sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold))
+                        sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=aucg)
 
             if not args.uselayer:
                 # 画像を表示したい
@@ -589,7 +609,7 @@ def train_good(train_loader, val_loader, model,
     return np.mean(good_d) + good_stddev*10
 
 
-def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val):
+def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val, aucg):
 
     # switch to evaluate mode
     model.eval()
@@ -662,10 +682,10 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             stime = time.time() - end
             print("Time : ", f"{stime:.3f}")
 
-            testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_defect_image, prefix="test_{}".format(i))
+            testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_defect_image, prefix="test_{}".format(i), aucg=aucg)
 
 
-def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix=""):
+def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", aucg=None):
     start_time = time.time()
     # -------------------test---------------------------------
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
@@ -704,7 +724,7 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     roc_label = np.where((target == labelg) | (target == labeld))
     roc_d = d[roc_label]
     roc_targetd = target[roc_label]
-    calc_roc(roc_targetd, roc_d, args, prefix=prefix)
+    calc_roc(roc_targetd, roc_d, args, prefix=prefix, aucg=aucg)
 
     # # 固有値のプロット
     # plt.figure()
@@ -863,7 +883,7 @@ def calc_errorval(features, sub_vec):
     return dist, stddev
 
 
-def calc_roc(target, d, args, prefix=""):
+def calc_roc(target, d, args, prefix="", aucg=None):
 
     fpr, tpr, thresholds = metrics.roc_curve(target, (d*(-1)))
     auc = metrics.roc_auc_score(target, (d*(-1)))
@@ -878,6 +898,8 @@ def calc_roc(target, d, args, prefix=""):
     plt.savefig(os.path.join(args.pngdir, 'ROC_{}.png'.format(prefix)))
     plt.close()
     print("auc", auc, d.shape)
+    if aucg is not None:
+        aucg.add(auc)
 
 
 def calc_umap(features, target, args, prefix=""):
