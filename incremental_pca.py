@@ -355,7 +355,7 @@ def main_worker(gpu, ngpus_per_node, args):
             ]))
     print("Train", train_dataset.classes)
 
-    train_sampler = KFoldSampler(train_dataset, seed=1, k=5)
+    train_sampler = KFoldSampler(train_dataset, seed=args.seed, k=5)
 
     train_loader1000 = torch.utils.data.DataLoader(
         train_dataset,
