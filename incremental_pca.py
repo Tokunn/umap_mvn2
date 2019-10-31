@@ -401,9 +401,9 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_k(k_count)
             print("train index", train_sampler.train)
             print("val_index", train_sampler.val)
-            d_result, (_, _) = train_good(train_loader1000, val_loader,
-                                          model, criterion, args,
-                                          k_count, test_threshold, "good_train")
+            d_result = train_good(train_loader1000, val_loader,
+                                  model, criterion, args,
+                                  k_count, test_threshold, "good_train")
             d_average += d_result
         threshold_results[test_threshold] = d_average/args.kfold
         print(str(test_threshold), d_average/args.kfold)
@@ -412,9 +412,9 @@ def main_worker(gpu, ngpus_per_node, args):
     print(threshold, threshold_results[threshold])
 
     # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
-    _, (sub_vec, sub_val) = train_good(train_loader1000, val_loader,
-                                       model, criterion, args,
-                                       k_count, threshold, "good")
+    sub_vec, sub_val = train_good(train_loader1000, val_loader,
+                                  model, criterion, args,
+                                  k_count, threshold, "good")
 
     # それに対して異常データを追加していく
     train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val)
@@ -500,7 +500,8 @@ def train_good(train_loader, val_loader, model,
             if sampler_state == 'good':
                 testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good")
             elif k_count == 0:
-                testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good_crossval")
+                testall(val_loader, model, args, test_threshold,
+                        sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold))
 
             if not args.uselayer:
                 # 画像を表示したい
@@ -511,6 +512,10 @@ def train_good(train_loader, val_loader, model,
                     plt.imshow(vec_img)
                     plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
                     plt.close()
+
+        if sampler_state == 'good':
+            print("Train good Time {}".format(time.time() - start_time))
+            return sub_vec, sub_val
 
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
@@ -581,7 +586,7 @@ def train_good(train_loader, val_loader, model,
         # plt.savefig('d_{}_{}.png'.format(str(test_threshold), k_count))
 
     print("Train good Time {}".format(time.time() - start_time))
-    return np.mean(good_d) + good_stddev*10, (sub_vec, sub_val)
+    return np.mean(good_d) + good_stddev*10
 
 
 def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val):
@@ -824,31 +829,36 @@ def incremental_PCA(features, sub_vec, sub_val, n, args, state="addgoodonly"):
 
 
 def calc_errorval(features, sub_vec):
-    # Y_rec
-    y = features @ sub_vec @ sub_vec.T
+    COS = True
+    if COS:
+        # Y_rec
+        y = features @ sub_vec @ sub_vec.T
 
-    # ユークリッド距離
-    # dist = np.linalg.norm(output-y, axis=1)
-    # cos
-    dist = [np.inner(oi, yi) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(features, y)]
-    # dist = []
-    # for oi, yi in zip(features, y):
-    #     norm_oi = np.linalg.norm(oi)
-    #     norm_yi = np.linalg.norm(yi)
-    #     if (norm_yi < 1e-10):
-    #         dist.append(0)
-    #     else:
-    #         dist.append(np.inner(oi, yi) / (norm_oi * norm_yi))
+        # ユークリッド距離
+        # dist = np.linalg.norm(output-y, axis=1)
+        # cos
+        dist = [np.inner(oi, yi) / (np.linalg.norm(oi) * np.linalg.norm(yi)) for oi, yi in zip(features, y)]
+        # dist = []
+        # for oi, yi in zip(features, y):
+        #     norm_oi = np.linalg.norm(oi)
+        #     norm_yi = np.linalg.norm(yi)
+        #     if (norm_yi < 1e-10):
+        #         dist.append(0)
+        #     else:
+        #         dist.append(np.inner(oi, yi) / (norm_oi * norm_yi))
 
-    # sin
-    dist = np.clip(np.asarray(dist)**2, 0, 1)
-    dist = 1-dist
-    # dist = np.sqrt(1-np.power(dist, 2))
-    print(dist)
+        # sin
+        dist = np.clip(np.asarray(dist)**2, 0, 1)
+        dist = 1-dist
+        # dist = np.sqrt(1-np.power(dist, 2))
+        print(dist)
 
-    # 分散
-    # good_variarance = dist.var()
-    # 標準偏差
+        # 分散
+        # good_variarance = dist.var()
+        # 標準偏差
+    else:
+        features_norm = np.linalg.norm(features, axis=1).reshape(-1, 1)
+        dist = np.sum(1-((features @ sub_vec)/features_norm)**2, axis=1)
     stddev = dist.std()
     return dist, stddev
 
