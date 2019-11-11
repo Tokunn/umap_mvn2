@@ -208,6 +208,7 @@ class SaveAUCGraph(object):
 
     def save(self):
         plt.figure()
+        plt.ylim(0, 1)
         plt.plot(self.auclist, label="Max = %.2f" % max(self.auclist))
         plt.legend()
         plt.savefig(os.path.join(self.pngpath, 'AUClog{}.png'.format(os.path.basename(self.pngpath))))
