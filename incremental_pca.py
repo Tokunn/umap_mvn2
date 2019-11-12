@@ -29,6 +29,7 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 
 import kernellib
+import hyperprmselect as hyp
 
 RESIZE = 50
 
@@ -96,6 +97,7 @@ parser.add_argument('--pngdir', default='.', type=str)
 parser.add_argument('--delheadvec', default=0, type=int)
 parser.add_argument('--uselayer', default=0, type=int)
 parser.add_argument('--usekernel', action='store_true')
+parser.add_argument('--usepseudo', action='store_true')
 
 best_acc1 = 0
 
@@ -438,14 +440,14 @@ def main_worker(gpu, ngpus_per_node, args):
     # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
     sub_vec, sub_val = train_good(train_loader1000, val_loader,
                                   model, criterion, args,
-                                  k_count, threshold, "good", aucg=aucg)
+                                  k_count, threshold, "good", aucg=aucg, final=True)
 
     # それに対して異常データを追加していく
     train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, aucg=aucg)
 
 
 def train_good(train_loader, val_loader, model,
-               criterion, args, k_count, test_threshold, sampler_state, aucg=None):
+               criterion, args, k_count, test_threshold, sampler_state, aucg=None, final=False):
     start_time = time.time()
 
     # switch to evaluate mode
@@ -541,7 +543,8 @@ def train_good(train_loader, val_loader, model,
                     plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
                     plt.close()
 
-        if sampler_state == 'good':
+        # 実際に使う部分空間を返す
+        if final:
             print("Train good Time {}".format(time.time() - start_time))
             return sub_vec, sub_val
 
@@ -584,6 +587,16 @@ def train_good(train_loader, val_loader, model,
 
         print("### Calc Error")
         good_d, good_stddev = calc_errorval(output, sub_vec)
+
+        if args.usepseudo:
+            # ----------------validation------------------------
+            # 生成した部分空間を擬似データのAUCで評価（寄与率決定用）
+            # 正常データから疑似データを生成
+            pseudo_output, pseudo_target = hyp.makedata(output)
+            print("pseudo_output", pseudo_output.shape)
+            print("pseudo_target", pseudo_target.shape)
+            pseudo_d, pseudo_stddev = calc_errorval(pseudo_output, sub_vec)
+            calc_roc(pseudo_target, pseudo_d, args, prefix="pseudo_{}".format(test_threshold), aucg=aucg)
 
         # # -------------------test---------------------------------
         # # 生成した正常部分空間を以上データを含めて評価(可視化用)
@@ -891,7 +904,7 @@ def calc_errorval(features, sub_vec):
         dist = np.clip(np.asarray(dist)**2, 0, 1)
         dist = 1-dist
         # dist = np.sqrt(1-np.power(dist, 2))
-        print(dist)
+        # print(dist)
 
         # 分散
         # good_variarance = dist.var()
