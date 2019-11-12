@@ -659,6 +659,10 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             output = output.cpu().numpy()
             target = target.cpu().numpy()
 
+            if args.usekernel:
+                kernel_inst = kernellib.UseKernel()
+                output = kernel_inst.kernel(output)
+
             print("### Calc eigenvalue, eigenvector")
             print("input shape (model output)", output.shape)
 
@@ -716,6 +720,11 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
             output = images.reshape(images.shape[0], -1)
         output = output.cpu()
         target = target.cpu()
+
+        if args.usekernel:
+            kernel_inst = kernellib.UseKernel()
+            output = kernel_inst.kernel(output)
+
         outputs_list.append(output)
         targets_list.append(target)
         path_list.append(path)
