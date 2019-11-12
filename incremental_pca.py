@@ -28,6 +28,8 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 
+import kernellib
+
 RESIZE = 50
 
 
@@ -93,6 +95,7 @@ parser.add_argument('--prmc', default=0.5, type=float)
 parser.add_argument('--pngdir', default='.', type=str)
 parser.add_argument('--delheadvec', default=0, type=int)
 parser.add_argument('--uselayer', default=0, type=int)
+parser.add_argument('--usekernel', action='store_true')
 
 best_acc1 = 0
 
@@ -477,6 +480,10 @@ def train_good(train_loader, val_loader, model,
             output = output.cpu().numpy()
             target = target.cpu().numpy()
 
+            if args.usekernel:
+                kernel_inst = kernellib.UseKernel()
+                output = kernel_inst.kernel(output)
+
             # normlization
             # scaler = MinMaxScaler()
             # print(scaler.fit(output))
@@ -564,6 +571,9 @@ def train_good(train_loader, val_loader, model,
                 output = images.reshape(images.shape[0], -1)
             output = output.cpu()
             target = target.cpu()
+            if args.usekernel:
+                kernel_inst = kernellib.UseKernel()
+                output = kernel_inst.kernel(output)
             # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
             # output = scaler.transform(output)
             outputs_list.append(output)
