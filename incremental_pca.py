@@ -98,6 +98,7 @@ parser.add_argument('--delheadvec', default=0, type=int)
 parser.add_argument('--uselayer', default=0, type=int)
 parser.add_argument('--usekernel', action='store_true')
 parser.add_argument('--usepseudo', action='store_true')
+parser.add_argument('--usereject', action='store_true')
 
 best_acc1 = 0
 
@@ -123,7 +124,7 @@ def DEBUG_SHOW(images):
 def saveimg(images, args, prefix=""):
     for i, img in enumerate(images):
         plt.figure()
-        plt.imshow(np.transpose(img, (1, 2, 0)))
+        plt.imshow(255 * np.transpose(img, (1, 2, 0)))
         plt.savefig(os.path.join(args.pngdir, prefix+str(i)+'.png'))
         plt.close()
 
@@ -438,12 +439,13 @@ def main_worker(gpu, ngpus_per_node, args):
     print(threshold, threshold_results[threshold])
 
     # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
-    sub_vec, sub_val = train_good(train_loader1000, val_loader,
-                                  model, criterion, args,
-                                  k_count, threshold, "good", aucg=aucg, final=True)
+    sub_vec, sub_val, good_mean, good_stddev, kernel_inst = train_good(train_loader1000, val_loader,
+                                                                       model, criterion, args,
+                                                                       k_count, threshold, "good",
+                                                                       aucg=aucg, final=True)
 
     # それに対して異常データを追加していく
-    train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, aucg=aucg)
+    train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev, aucg=aucg, kernel_inst=kernel_inst)
 
 
 def train_good(train_loader, val_loader, model,
@@ -482,9 +484,12 @@ def train_good(train_loader, val_loader, model,
             output = output.cpu().numpy()
             target = target.cpu().numpy()
 
+            # カーネルを使用
+            kernel_inst = None
             if args.usekernel:
-                kernel_inst = kernellib.UseKernel()
-                output = kernel_inst.kernel(output)
+                kernel_inst = kernellib.UseKernel(kernel="rbf")
+                kernel_inst.fit(output)
+                output = kernel_inst.transform(output)
 
             # normlization
             # scaler = MinMaxScaler()
@@ -528,10 +533,10 @@ def train_good(train_loader, val_loader, model,
             print(time.time() - end)
 
             if sampler_state == 'good':
-                testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good")
+                testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good", kernel_inst=kernel_inst)
             elif k_count == 0:
                 testall(val_loader, model, args, test_threshold,
-                        sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=aucg)
+                        sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=aucg, kernel_inst=kernel_inst)
 
             if not args.uselayer:
                 # 画像を表示したい
@@ -542,11 +547,6 @@ def train_good(train_loader, val_loader, model,
                     plt.imshow(vec_img)
                     plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
                     plt.close()
-
-        # 実際に使う部分空間を返す
-        if final:
-            print("Train good Time {}".format(time.time() - start_time))
-            return sub_vec, sub_val
 
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
@@ -574,9 +574,6 @@ def train_good(train_loader, val_loader, model,
                 output = images.reshape(images.shape[0], -1)
             output = output.cpu()
             target = target.cpu()
-            if args.usekernel:
-                kernel_inst = kernellib.UseKernel()
-                output = kernel_inst.kernel(output)
             # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
             # output = scaler.transform(output)
             outputs_list.append(output)
@@ -584,6 +581,9 @@ def train_good(train_loader, val_loader, model,
 
         output = torch.cat(outputs_list).numpy()
         target = torch.cat(targets_list).numpy()
+
+        if args.usekernel:
+            output = kernel_inst.transform(output)
 
         print("### Calc Error")
         good_d, good_stddev = calc_errorval(output, sub_vec)
@@ -596,7 +596,7 @@ def train_good(train_loader, val_loader, model,
             print("pseudo_output", pseudo_output.shape)
             print("pseudo_target", pseudo_target.shape)
             pseudo_d, pseudo_stddev = calc_errorval(pseudo_output, sub_vec)
-            calc_roc(pseudo_target, pseudo_d, args, prefix="pseudo_{}".format(test_threshold), aucg=aucg)
+            calc_roc(pseudo_target, pseudo_d, args, prefix="pseudo_{}".format(test_threshold), aucg=None)
 
         # # -------------------test---------------------------------
         # # 生成した正常部分空間を以上データを含めて評価(可視化用)
@@ -630,10 +630,16 @@ def train_good(train_loader, val_loader, model,
         # plt.savefig('d_{}_{}.png'.format(str(test_threshold), k_count))
 
     print("Train good Time {}".format(time.time() - start_time))
-    return np.mean(good_d) + good_stddev*10
+
+    # 実際に使う部分空間を返す
+    if final:
+        return sub_vec, sub_val, np.mean(good_d), good_stddev, kernel_inst
+    else:
+        # return np.mean(good_d) + good_stddev*10
+        return np.mean(good_d)
 
 
-def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val, aucg):
+def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev, aucg, kernel_inst=None):
 
     # switch to evaluate mode
     model.eval()
@@ -650,8 +656,6 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
         learned_defect_image = []
         p0 = None
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
-            learned_defect_image.append(images.numpy()[0])
-            saveimg(learned_defect_image, args, prefix="learned")
             # DEBUG_SHOW(images)
             end = time.time()
             print("\n#" + "-"*30 + ' ' + str(i) + 'train defective ' + "-"*30 + "#")
@@ -673,11 +677,20 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             target = target.cpu().numpy()
 
             if args.usekernel:
-                kernel_inst = kernellib.UseKernel()
-                output = kernel_inst.kernel(output)
+                output = kernel_inst.transform(output)
 
             print("### Calc eigenvalue, eigenvector")
             print("input shape (model output)", output.shape)
+
+            if args.usereject:
+                # dを用いて学習するかどうかを判定
+                def_d, _ = calc_errorval(output, sub_vec)
+                if ((good_mean + 3*good_mean) >= def_d[0]):
+                    print("[[[Reject]]]")
+                    continue
+
+            learned_defect_image.append(images.numpy()[0])
+            saveimg(learned_defect_image, args, prefix="learned")
 
             # インクリメンタルPCAを用いた更新
             # incremental
@@ -704,16 +717,18 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             if p0 is not None:
                 p_e_val, _ = np.linalg.eigh(p0 @ p1 @ p0)
                 p_e_val = p_e_val[::-1]
-                print(p_e_val[:len(sub_val)])
+                # print(p_e_val[:len(sub_val)])
             p0 = p1
 
             stime = time.time() - end
             print("Time : ", f"{stime:.3f}")
 
-            testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_defect_image, prefix="test_{}".format(i), aucg=aucg)
+            testall(val_loader, model, args, threshold, sub_vec,
+                    sub_val, learned_defect_image, prefix="test_{}".format(i),
+                    aucg=aucg, kernel_inst=kernel_inst)
 
 
-def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", aucg=None):
+def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", aucg=None, kernel_inst=None):
     start_time = time.time()
     # -------------------test---------------------------------
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
@@ -734,16 +749,15 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
         output = output.cpu()
         target = target.cpu()
 
-        if args.usekernel:
-            kernel_inst = kernellib.UseKernel()
-            output = kernel_inst.kernel(output)
-
         outputs_list.append(output)
         targets_list.append(target)
         path_list.append(path)
 
     output = torch.cat(outputs_list).numpy()
     target = torch.cat(targets_list).numpy()
+
+    if args.usekernel:
+        output = kernel_inst.transform(output)
 
     print("### Calc Error")
     d, _ = calc_errorval(output, sub_vec)
@@ -817,7 +831,7 @@ def calc_SVD(features):
 def calc_sub_vec(e_vec, e_val, threshold, args):
     print("e_vec.shape", e_vec.shape)
     print("e_val.shape", e_val.shape)
-    print("e_val", e_val)
+    # print("e_val", e_val)
 
     # 固有値の絶対値を取る
     # e_val = np.abs(e_val)
@@ -840,7 +854,7 @@ def calc_sub_vec(e_vec, e_val, threshold, args):
     print("sub_vec.shape", sub_vec.shape)
     # print("sub_vec", sub_vec)
     print("sub_val.shape", sub_val.shape)
-    print("sub_val", sub_val)
+    # print("sub_val", sub_val)
     return sub_vec, sub_val
 
 
@@ -874,7 +888,7 @@ def incremental_PCA(features, sub_vec, sub_val, n, args, state="addgoodonly"):
     e_val, rot = np.linalg.eigh(ll)
     e_val = e_val[::-1]
     # update e_vec
-    print(rot)
+    # print(rot)
     e_vec = np.block([sub_vec, h_hat]) @ rot
     # e_vec = sub_vec @ rot  # del new vec
     e_vec = e_vec.T[::-1].T
