@@ -14,11 +14,12 @@ for k in glob.glob(os.path.expanduser('~/Documents/umap_mnv2/dataset_all/*')):
         for j in range(0, 19, 6):  # layer
             # for l in [7, 5, 14, 32, 84, 55, 71, 16, 78]:  # seed
             for l in [55]:
-                scriptname = 'josbscript'+str(os.path.basename(k))+'_'+str(i)+'_'+str(j)+'_'+str(l)+'.sh'
-                scripts.append(scriptname)
-                print(scriptname)
-                with open(scriptname, 'w') as f:
-                    f.write(script.format(str(i), str(j), str(k), str(os.path.basename(k)), str(l)))
+                for m in [0.85, 0.9, 0.95, 0.99, 0.999]:
+                    scriptname = 'josbscript'+str(os.path.basename(k))+'_'+str(i)+'_'+str(j)+'_'+str(l)+'_'+str(m)+'.sh'
+                    scripts.append(scriptname)
+                    print(scriptname)
+                    with open(scriptname, 'w') as f:
+                        f.write(script.format(str(i), str(j), str(k), str(os.path.basename(k)), str(l), str(m)))
 
 print(scripts)
 if (input('continue ? >')[0] == 'y'):

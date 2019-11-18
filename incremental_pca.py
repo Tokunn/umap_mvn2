@@ -6,6 +6,7 @@ import random
 import time
 import warnings
 import umap
+import pickle
 # from scipy.sparse.csgraph import connected_components
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -96,6 +97,7 @@ parser.add_argument('--prmc', default=0.5, type=float)
 parser.add_argument('--pngdir', default='.', type=str)
 parser.add_argument('--delheadvec', default=0, type=int)
 parser.add_argument('--uselayer', default=0, type=int)
+parser.add_argument('--useparam', default=0, type=float)
 parser.add_argument('--usekernel', action='store_true')
 parser.add_argument('--usepseudo', action='store_true')
 parser.add_argument('--usereject', action='store_true')
@@ -219,6 +221,8 @@ class SaveAUCGraph(object):
         plt.legend()
         plt.savefig(os.path.join(self.pngpath, 'AUClog{}.png'.format(os.path.basename(self.pngpath))))
         plt.close()
+        with open(os.path.join(self.pngpath, 'AUClog{}.pcl'.format(os.path.basename(self.pngpath))), 'wb') as f:
+            pickle.dump(self.auclist, f)
 
 
 def main():
@@ -257,27 +261,68 @@ def main():
         main_worker(args.gpu, ngpus_per_node, args)
 
 
-def main_worker(gpu, ngpus_per_node, args):
-    global best_acc1
-    args.gpu = gpu
+def get_model_layer(n_layer, args, ngpus_per_node):
+    # Data loading code
+    traindir = os.path.join(args.data, 'train')
+    valdir = os.path.join(args.data, 'test')
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
 
-    if os.path.exists(args.pngdir):
-        shutil.rmtree(args.pngdir)
-    os.makedirs(args.pngdir, exist_ok=True)
+    if n_layer:
+        train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
+                transforms.Resize(224),
+                # transforms.Grayscale(),
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
+                normalize
+            ]))
+    else:
+        train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
+                transforms.Resize(RESIZE),  # 画像を表示したい
+                # transforms.Grayscale(),
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
+            ]))
+    print("Train", train_dataset.classes)
 
-    if args.gpu is not None:
-        print("Use GPU: {} for training".format(args.gpu))
+    train_sampler = KFoldSampler(train_dataset, seed=args.seed, k=5)
 
-    if args.distributed:
-        if args.dist_url == "env://" and args.rank == -1:
-            args.rank = int(os.environ["RANK"])
-        if args.multiprocessing_distributed:
-            # For multiprocessing distributed training, rank needs to be the
-            # global rank among all the processes
-            args.rank = args.rank * ngpus_per_node + gpu
-        dist.init_process_group(backend=args.dist_backend,
-                                init_method=args.dist_url,
-                                world_size=args.world_size, rank=args.rank)
+    train_loader1000 = torch.utils.data.DataLoader(
+        train_dataset,
+        sampler=train_sampler,
+        batch_size=1000, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
+
+    train_loader1 = torch.utils.data.DataLoader(
+        train_dataset,
+        sampler=train_sampler,
+        batch_size=1, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
+
+    if n_layer:
+        val_dataset = ImageFolderPath(valdir, transforms.Compose([
+                transforms.Resize(224),
+                # transforms.Grayscale(),
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
+                normalize,
+            ]))
+    else:
+        val_dataset = ImageFolderPath(valdir, transforms.Compose([
+                transforms.Resize(RESIZE),  # 画像を表示したい
+                # transforms.Grayscale(),
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
+            ]))
+    print("Test", val_dataset.classes)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.val_batch_size, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
+
+    if not n_layer:
+        return None, train_loader1000, train_loader1, val_loader
+
     # create model
     args.arch = 'mobilenet_v2'
     if args.pretrained:
@@ -289,8 +334,8 @@ def main_worker(gpu, ngpus_per_node, args):
     # mobilenetv2
     model = torch.hub.load('pytorch/vision', 'mobilenet_v2', pretrained=True)
     model.classifier = nn.Sequential(*list(model.classifier.children())[:-2])
-    if args.uselayer:
-        model.features = nn.Sequential(*list(model.features.children())[:args.uselayer])
+    if n_layer:
+        model.features = nn.Sequential(*list(model.features.children())[:n_layer])
         print(model)
         print(len(model.features))
 
@@ -326,134 +371,118 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             model = torch.nn.DataParallel(model).cuda()
 
-    # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    # # define loss function (criterion) and optimizer
+    # criterion = nn.CrossEntropyLoss().cuda(args.gpu)
 
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    # optimizer = torch.optim.SGD(model.parameters(), args.lr,
+    #                             momentum=args.momentum,
+    #                             weight_decay=args.weight_decay)
 
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            if args.gpu is None:
-                checkpoint = torch.load(args.resume)
-            else:
-                # Map model to be loaded to specified single gpu.
-                loc = 'cuda:{}'.format(args.gpu)
-                checkpoint = torch.load(args.resume, map_location=loc)
-            args.start_epoch = checkpoint['epoch']
-            best_acc1 = checkpoint['best_acc1']
-            if args.gpu is not None:
-                # best_acc1 may be from a checkpoint from a different GPU
-                best_acc1 = best_acc1.to(args.gpu)
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+    # # optionally resume from a checkpoint
+    # if args.resume:
+    #     if os.path.isfile(args.resume):
+    #         print("=> loading checkpoint '{}'".format(args.resume))
+    #         if args.gpu is None:
+    #             checkpoint = torch.load(args.resume)
+    #         else:
+    #             # Map model to be loaded to specified single gpu.
+    #             loc = 'cuda:{}'.format(args.gpu)
+    #             checkpoint = torch.load(args.resume, map_location=loc)
+    #         args.start_epoch = checkpoint['epoch']
+    #         best_acc1 = checkpoint['best_acc1']
+    #         if args.gpu is not None:
+    #             # best_acc1 may be from a checkpoint from a different GPU
+    #             best_acc1 = best_acc1.to(args.gpu)
+    #         model.load_state_dict(checkpoint['state_dict'])
+    #         optimizer.load_state_dict(checkpoint['optimizer'])
+    #         print("=> loaded checkpoint '{}' (epoch {})"
+    #               .format(args.resume, checkpoint['epoch']))
+    #     else:
+    #         print("=> no checkpoint found at '{}'".format(args.resume))
+
+    # switch to evaluate mode
+    model.eval()
+
+    return model, train_loader1000, train_loader1, val_loader
+
+
+def main_worker(gpu, ngpus_per_node, args):
+    global best_acc1
+    args.gpu = gpu
+
+    if os.path.exists(args.pngdir):
+        shutil.rmtree(args.pngdir)
+    os.makedirs(args.pngdir, exist_ok=True)
+
+    if args.gpu is not None:
+        print("Use GPU: {} for training".format(args.gpu))
+
+    if args.distributed:
+        if args.dist_url == "env://" and args.rank == -1:
+            args.rank = int(os.environ["RANK"])
+        if args.multiprocessing_distributed:
+            # For multiprocessing distributed training, rank needs to be the
+            # global rank among all the processes
+            args.rank = args.rank * ngpus_per_node + gpu
+        dist.init_process_group(backend=args.dist_backend,
+                                init_method=args.dist_url,
+                                world_size=args.world_size, rank=args.rank)
 
     cudnn.benchmark = True
 
-    # Data loading code
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'test')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    if args.uselayer:
-        train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
-                transforms.Resize(224),
-                # transforms.Grayscale(),
-                transforms.ToTensor(),
-                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
-                normalize
-            ]))
-    else:
-        train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
-                transforms.Resize(RESIZE),  # 画像を表示したい
-                # transforms.Grayscale(),
-                transforms.ToTensor(),
-                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
-            ]))
-    print("Train", train_dataset.classes)
-
-    train_sampler = KFoldSampler(train_dataset, seed=args.seed, k=5)
-
-    train_loader1000 = torch.utils.data.DataLoader(
-        train_dataset,
-        sampler=train_sampler,
-        batch_size=1000, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
-
-    train_loader1 = torch.utils.data.DataLoader(
-        train_dataset,
-        sampler=train_sampler,
-        batch_size=1, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
-
-    if args.uselayer:
-        val_dataset = ImageFolderPath(valdir, transforms.Compose([
-                transforms.Resize(224),
-                # transforms.Grayscale(),
-                transforms.ToTensor(),
-                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
-                normalize,
-            ]))
-    else:
-        val_dataset = ImageFolderPath(valdir, transforms.Compose([
-                transforms.Resize(RESIZE),  # 画像を表示したい
-                # transforms.Grayscale(),
-                transforms.ToTensor(),
-                # transforms.Lambda(lambda gray: torch.cat([gray, gray, gray])),
-            ]))
-    print("Test", val_dataset.classes)
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=args.val_batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
-
     aucg = SaveAUCGraph(args.pngdir)
 
-    # しきい値の決定
-    thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
-    # thresholds_list = DEBUG([0.999])
-    threshold_results = {}
-    for test_threshold in thresholds_list:
-        d_average = 0
-        for k_count in range(args.kfold):
-            # Train
-            train_sampler.set_k(k_count)
-            print("train index", train_sampler.train)
-            print("val_index", train_sampler.val)
-            d_result = train_good(train_loader1000, val_loader,
-                                  model, criterion, args,
-                                  k_count, test_threshold, "good_train")
-            d_average += d_result
-        threshold_results[test_threshold] = d_average/args.kfold
-        print(str(test_threshold), d_average/args.kfold)
-    print(threshold_results)
-    threshold = min(threshold_results, key=threshold_results.get)
-    print(threshold, threshold_results[threshold])
+    #  モデルの層の決定
+    if args.uselayer:
+        layer_list = [args.uselayer]
+    else:
+        layer_list = [0, 6, 12, 18]
+    results = {}
+    for test_layer in layer_list:
+        model, train_loader1000, train_loader1, val_loader = get_model_layer(test_layer, args, ngpus_per_node)
+        # しきい値の決定
+        if args.useparam:
+            thresholds_list = [args.useparam]
+        else:
+            thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
+        for test_threshold in thresholds_list:
+            d_average = 0
+            for k_count in range(args.kfold):
+                # Train
+                print("\n#" + "="*30 + ' train_good SVD ' + str(test_layer) + '/' + str(test_threshold) + '/' + str(k_count) + ' ' + "="*30 + "#")
+                train_loader1000.sampler.set_k(k_count)
+                print("train index", train_loader1000.sampler.train)
+                print("val_index", train_loader1000.sampler.val)
+                d_result = train_good(train_loader1000, val_loader,
+                                      model, args,
+                                      k_count, test_threshold, "good_train")
+                d_average += d_result
+            results[(test_layer, test_threshold)] = d_average/args.kfold
+            print(str(test_threshold), d_average/args.kfold)
+        print(results)
+    layer, threshold = min(results, key=results.get)
+    print(layer, threshold, results[(layer, threshold)])
 
     # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
+    model, train_loader1000, train_loader1, val_loader = get_model_layer(layer, args, ngpus_per_node)
+    print(train_loader1000, val_loader,
+          model, args,
+          k_count, threshold, "good",
+          aucg, True)
+
     sub_vec, sub_val, good_mean, good_stddev, kernel_inst = train_good(train_loader1000, val_loader,
-                                                                       model, criterion, args,
+                                                                       model, args,
                                                                        k_count, threshold, "good",
-                                                                       aucg=aucg, final=True)
+                                                                       aucg=aucg,
+                                                                       final=True)
 
     # それに対して異常データを追加していく
     train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev, aucg=aucg, kernel_inst=kernel_inst)
 
 
 def train_good(train_loader, val_loader, model,
-               criterion, args, k_count, test_threshold, sampler_state, aucg=None, final=False):
+               args, k_count, test_threshold, sampler_state, aucg=None, final=False):
     start_time = time.time()
-
-    # switch to evaluate mode
-    model.eval()
 
     # Train
     # 正常データのみを用いたトレーニング
@@ -466,7 +495,6 @@ def train_good(train_loader, val_loader, model,
             assert i == 0
             # DEBUG_SHOW(images)
             end = time.time()
-            print("\n#" + "="*30 + ' train_good SVD ' + str(test_threshold) + '/' + str(k_count) + ' ' + "="*30 + "#")
             # Reverse order
             images = torch.from_numpy(images.numpy()[::-1].copy())
             target = torch.from_numpy(target.numpy()[::-1].copy())
@@ -476,7 +504,7 @@ def train_good(train_loader, val_loader, model,
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            if args.uselayer:
+            if model is not None:
                 output = model(images)
             else:
                 # 画像を表示したい
@@ -538,7 +566,7 @@ def train_good(train_loader, val_loader, model,
                 testall(val_loader, model, args, test_threshold,
                         sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=aucg, kernel_inst=kernel_inst)
 
-            if not args.uselayer:
+            if model is None:
                 # 画像を表示したい
                 for i, vec_img in enumerate(sub_vec.T):
                     vec_img = np.reshape(vec_img, (3, RESIZE, RESIZE))
@@ -567,7 +595,7 @@ def train_good(train_loader, val_loader, model,
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            if args.uselayer:
+            if model is not None:
                 output = model(images)
             else:
                 # 画像を表示したい
@@ -635,14 +663,10 @@ def train_good(train_loader, val_loader, model,
     if final:
         return sub_vec, sub_val, np.mean(good_d), good_stddev, kernel_inst
     else:
-        # return np.mean(good_d) + good_stddev*10
-        return np.mean(good_d)
+        return np.mean(good_d) + good_stddev*10
 
 
 def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev, aucg, kernel_inst=None):
-
-    # switch to evaluate mode
-    model.eval()
 
     # Train
     # 異常データを追加していく
@@ -668,7 +692,7 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            if args.uselayer:
+            if model is not None:
                 output = model(images)
             else:
                 # 画像を表示したい
@@ -741,7 +765,7 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
         target = target.cuda(args.gpu, non_blocking=True)
 
         # compute output
-        if args.uselayer:
+        if model is not None:
             output = model(images)
         else:
             # 画像を表示したい
@@ -810,12 +834,14 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     plt.title(str(val_loader.dataset.classes))
     plt.savefig(os.path.join(args.pngdir, 'D_{}_{}.png'.format(prefix, str(threshold))))
     plt.close()
+    temp = (d, target_plot, path_list[0])
     with open(os.path.join(args.pngdir, "d_list.csv"), "w") as f:
-        temp = (d, target_plot, path_list[0])
         csvdata = list(zip(*temp))
         writer = csv.writer(f)
         for s in csvdata:
             writer.writerow(s)
+    with open(os.path.join(args.pngdir, 'D_{}_{}.pcl'.format(prefix, str(threshold))), 'wb') as f:
+        pickle.dump(temp, f)
 
     print("Test Time : {}".format(time.time() - start_time))
 
@@ -947,6 +973,8 @@ def calc_roc(target, d, args, prefix="", aucg=None):
     print("auc", auc, d.shape)
     if aucg is not None:
         aucg.add(auc)
+    with open(os.path.join(args.pngdir, 'ROC_{}.pcl'.format(prefix)), 'wb') as f:
+        pickle.dump((fpr, tpr), f)
 
 
 def calc_umap(features, target, args, prefix=""):
