@@ -71,18 +71,10 @@ class UseKernel(object):
         K = self._set_kernel(X, self.train_X)
         return (self.L@self.P.T@K.T).T
 
-    def kernel(self, train_X):  # train_Y ={+1 or -1}
-        if self.kernel_flag is True:
-            # gemerate the empirical feature space
-            self._gen_emp(train_X)
-            H = self._map_emp(train_X)
-        else:
-            H = train_X
-        # pidx = np.where(train_Y == 1)
-        # nidx = np.where(train_Y == -1)
-        # pX = H[pidx]
-        # nX = H[nidx]
-        # G = pX.T @ pX/pX.shape[0] - self.C*nX.T @ nX/nX.shape[0]
-        # e_val, e_vec = np.linalg.eigh(G)
-        # self.basis, _ = self._select_eig(e_val, e_vec)
+    def fit(self, train_X):  # train_Y ={+1 or -1}
+        # gemerate the empirical feature space
+        self._gen_emp(train_X)
+
+    def transform(self, X):
+        H = self._map_emp(X)
         return H
