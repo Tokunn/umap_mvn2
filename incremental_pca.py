@@ -31,6 +31,7 @@ import torchvision.models as models
 
 import kernellib
 import hyperprmselect as hyp
+from inferencevino import NCSModel
 
 RESIZE = 50
 
@@ -101,6 +102,7 @@ parser.add_argument('--useparam', default=0, type=float)
 parser.add_argument('--usekernel', action='store_true')
 parser.add_argument('--usepseudo', action='store_true')
 parser.add_argument('--usereject', action='store_true')
+parser.add_argument('--vino', action='store_true')
 
 best_acc1 = 0
 
@@ -323,6 +325,7 @@ def get_model_layer(n_layer, args, ngpus_per_node):
     if not n_layer:
         return None, train_loader1000, train_loader1, val_loader
 
+    # ----------------------------------- pytorch ---------------------------------
     # create model
     args.arch = 'mobilenet_v2'
     if args.pretrained:
@@ -402,6 +405,12 @@ def get_model_layer(n_layer, args, ngpus_per_node):
 
     # switch to evaluate mode
     model.eval()
+    
+    # ------------------------------- openvino ----------------------------
+    if args.vino:
+        temp_model = "mobilenet_v2_12_fp16.xml"
+        temp_device = "MYRIAD"
+        model = NCSModel(temp_model)
 
     return model, train_loader1000, train_loader1, val_loader
 
@@ -432,49 +441,65 @@ def main_worker(gpu, ngpus_per_node, args):
 
     aucg = SaveAUCGraph(args.pngdir)
 
-    #  モデルの層の決定
-    if args.uselayer:
-        layer_list = [args.uselayer]
-    else:
-        layer_list = [0, 6, 12, 18]
-    results = {}
-    for test_layer in layer_list:
-        model, train_loader1000, train_loader1, val_loader = get_model_layer(test_layer, args, ngpus_per_node)
-        # しきい値の決定
-        if args.useparam:
-            thresholds_list = [args.useparam]
+    if not args.vino:
+        #  モデルの層の決定
+        if args.uselayer:
+            layer_list = [args.uselayer]
         else:
-            thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
-        for test_threshold in thresholds_list:
-            d_average = 0
-            for k_count in range(args.kfold):
-                # Train
-                print("\n#" + "="*30 + ' train_good SVD ' + str(test_layer) + '/' + str(test_threshold) + '/' + str(k_count) + ' ' + "="*30 + "#")
-                train_loader1000.sampler.set_k(k_count)
-                print("train index", train_loader1000.sampler.train)
-                print("val_index", train_loader1000.sampler.val)
-                d_result = train_good(train_loader1000, val_loader,
-                                      model, args,
-                                      k_count, test_threshold, "good_train")
-                d_average += d_result
-            results[(test_layer, test_threshold)] = d_average/args.kfold
-            print(str(test_threshold), d_average/args.kfold)
-        print(results)
-    layer, threshold = min(results, key=results.get)
-    print(layer, threshold, results[(layer, threshold)])
+            layer_list = [0, 6, 12, 18]
+        results = {}
+        for test_layer in layer_list:
+            model, train_loader1000, train_loader1, val_loader = get_model_layer(test_layer, args, ngpus_per_node)
+            # しきい値の決定
+            if args.useparam:
+                thresholds_list = [args.useparam]
+            else:
+                thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
+            for test_threshold in thresholds_list:
+                d_average = 0
+                for k_count in range(args.kfold):
+                    # Train
+                    print("\n#" + "="*30 + ' train_good SVD ' + str(test_layer) + '/' + str(test_threshold) + '/' + str(k_count) + ' ' + "="*30 + "#")
+                    train_loader1000.sampler.set_k(k_count)
+                    print("train index", train_loader1000.sampler.train)
+                    print("val_index", train_loader1000.sampler.val)
+                    d_result = train_good(train_loader1000, val_loader,
+                                          model, args,
+                                          k_count, test_threshold, "good_train")
+                    d_average += d_result
+                results[(test_layer, test_threshold)] = d_average/args.kfold
+                print(str(test_threshold), d_average/args.kfold)
+            print(results)
+        layer, threshold = min(results, key=results.get)
+        print(layer, threshold, results[(layer, threshold)])
 
-    # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
-    model, train_loader1000, train_loader1, val_loader = get_model_layer(layer, args, ngpus_per_node)
-    print(train_loader1000, val_loader,
-          model, args,
-          k_count, threshold, "good",
-          aucg, True)
+        # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
+        model, train_loader1000, train_loader1, val_loader = get_model_layer(layer, args, ngpus_per_node)
+        print(train_loader1000, val_loader,
+              model, args,
+              k_count, threshold, "good",
+              aucg, True)
 
-    sub_vec, sub_val, good_mean, good_stddev, kernel_inst = train_good(train_loader1000, val_loader,
-                                                                       model, args,
-                                                                       k_count, threshold, "good",
-                                                                       aucg=aucg,
-                                                                       final=True)
+        sub_vec, sub_val, good_mean, good_stddev, kernel_inst = train_good(train_loader1000, val_loader,
+                                                                           model, args,
+                                                                           k_count, threshold, "good",
+                                                                           aucg=aucg,
+                                                                           final=True)
+        print("DEBUG")
+        np.save("sub_vec.npy", sub_vec)
+        np.save("sub_val.npy", sub_val)
+        np.save("good_mean.npy", good_mean)
+        np.save("good_stddev.npy", good_stddev)
+        np.save("threshold.npy", threshold)
+
+    else:  # vino()
+        model, train_loader1000, train_loader1, val_loader = get_model_layer(12, args, ngpus_per_node)
+        sub_vec = np.load("sub_vec.npy")
+        sub_val = np.load("sub_val.npy")
+        good_mean = np.load("good_mean.npy")
+        good_stddev = np.load("good_stddev.npy")
+        threshold = np.load("threshold.npy")
+        kernel_inst=None
 
     # それに対して異常データを追加していく
     train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev, aucg=aucg, kernel_inst=kernel_inst)
@@ -692,13 +717,19 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            if model is not None:
-                output = model(images)
+            if not args.vino:
+                if model is not None:
+                    output = model(images)
+                else:
+                    # 画像を表示したい
+                    output = images.reshape(images.shape[0], -1)
+                output = output.cpu().numpy()
+                target = target.cpu().numpy()
             else:
-                # 画像を表示したい
-                output = images.reshape(images.shape[0], -1)
-            output = output.cpu().numpy()
-            target = target.cpu().numpy()
+                image = np.transpose(images.cpu().numpy(), (0, 2, 3, 1))
+                output = model(image[0])
+                output = np.asarray([output])
+                target = target.cpu().numpy()
 
             if args.usekernel:
                 output = kernel_inst.transform(output)
@@ -745,11 +776,12 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             p0 = p1
 
             stime = time.time() - end
-            print("Time : ", f"{stime:.3f}")
+            # print("Time : ", f"{stime:.3f}")
 
-            testall(val_loader, model, args, threshold, sub_vec,
-                    sub_val, learned_defect_image, prefix="test_{}".format(i),
-                    aucg=aucg, kernel_inst=kernel_inst)
+            if not args.vino:
+                testall(val_loader, model, args, threshold, sub_vec,
+                        sub_val, learned_defect_image, prefix="test_{}".format(i),
+                        aucg=aucg, kernel_inst=kernel_inst)
 
 
 def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", aucg=None, kernel_inst=None):

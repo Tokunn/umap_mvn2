@@ -8,7 +8,7 @@ import random
 
 
 def main():
-    SOURCE_DIR = os.path.expanduser('~/group/msuzuki/MVTechAD')
+    SOURCE_DIR = os.path.expanduser('~/MVTechAD')
     DST_DIR = os.path.join(os.path.expanduser(os.path.dirname(os.path.abspath(__file__))), os.path.basename(sys.argv[1]))
     os.mkdir(DST_DIR)
     print(SOURCE_DIR, DST_DIR)
