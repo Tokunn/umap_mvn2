@@ -1,6 +1,6 @@
 import argparse
 import os
-import csv
+# import csv
 import shutil
 import random
 import time
@@ -124,11 +124,33 @@ def DEBUG_SHOW(images):
 
 
 def saveimg(images, args, prefix=""):
+    unnorm = UnNormalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
     for i, img in enumerate(images):
+        # img = deepcopy(unnorm(img[0]))
+        # img = img.numpy()
         plt.figure()
-        plt.imshow(255 * np.transpose(img, (1, 2, 0)))
+        plt.imshow(np.transpose(img, (1, 2, 0)))
         plt.savefig(os.path.join(args.pngdir, prefix+str(i)+'.png'))
         plt.close()
+
+
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Normalized image.
+        """
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+            # The normalize code -> t.sub_(m).div_(s)
+        return tensor
 
 
 class KFoldSampler(torch.utils.data.Sampler):
@@ -438,6 +460,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         layer_list = [0, 6, 12, 18]
     results = {}
+    d_good_list = {}
     for test_layer in layer_list:
         model, train_loader1000, train_loader1, val_loader = get_model_layer(test_layer, args, ngpus_per_node)
         # しきい値の決定
@@ -453,13 +476,18 @@ def main_worker(gpu, ngpus_per_node, args):
                 train_loader1000.sampler.set_k(k_count)
                 print("train index", train_loader1000.sampler.train)
                 print("val_index", train_loader1000.sampler.val)
-                d_result = train_good(train_loader1000, val_loader,
-                                      model, args,
-                                      k_count, test_threshold, "good_train")
+                d_result, d_good = train_good(train_loader1000, val_loader,
+                                              model, args,
+                                              k_count, test_threshold, "good_train")
                 d_average += d_result
+                d_good_list[(test_layer, test_threshold, k_count)] = d_good
             results[(test_layer, test_threshold)] = d_average/args.kfold
             print(str(test_threshold), d_average/args.kfold)
         print(results)
+    with open(os.path.join(args.pngdir, 'paramsearch.pcl'), 'wb') as f:
+        pickle.dump(results, f)
+    with open(os.path.join(args.pngdir, 'd_good_list.pcl'), 'wb') as f:
+        pickle.dump(d_good_list, f)
     layer, threshold = min(results, key=results.get)
     print(layer, threshold, results[(layer, threshold)])
 
@@ -561,10 +589,11 @@ def train_good(train_loader, val_loader, model,
             print(time.time() - end)
 
             if sampler_state == 'good':
-                testall(val_loader, model, args, test_threshold, sub_vec, sub_val, learned_good_image, prefix="good", kernel_inst=kernel_inst)
+                testall(val_loader, model, args, test_threshold,
+                        sub_vec, sub_val, learned_good_image, prefix="good", aucg=aucg, kernel_inst=kernel_inst)
             elif k_count == 0:
                 testall(val_loader, model, args, test_threshold,
-                        sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=aucg, kernel_inst=kernel_inst)
+                        sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=None, kernel_inst=kernel_inst)
 
             if model is None:
                 # 画像を表示したい
@@ -663,7 +692,7 @@ def train_good(train_loader, val_loader, model,
     if final:
         return sub_vec, sub_val, np.mean(good_d), good_stddev, kernel_inst
     else:
-        return np.mean(good_d) + good_stddev*10
+        return np.mean(good_d) + good_stddev*10, good_d
 
 
 def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev, aucg, kernel_inst=None):
@@ -714,6 +743,7 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
                     continue
 
             learned_defect_image.append(images.numpy()[0])
+            # learned_defect_image.append(images)
             saveimg(learned_defect_image, args, prefix="learned")
 
             # インクリメンタルPCAを用いた更新
@@ -816,12 +846,21 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     # print(target.shape)
     # print(np.asarray(target_learned).shape)
     # print(target_plot.shape)
+
+    latest_learned_image = None
     learned_indices = []
     for i, img in enumerate(images):
         for l_img in learned_image:
             if np.allclose(img.numpy(), l_img):
                 learned_indices.append(i)
                 break
+        if np.allclose(img.numpy(), learned_image[-1]):
+            latest_learned_image = i
+    print("learned_indices", learned_indices)
+    if latest_learned_image is None:
+        print("latest_learned_image is nOne")
+    else:
+        print(latest_learned_image)
     target[learned_indices] = 5
     target_plot = target
 
@@ -834,12 +873,12 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     plt.title(str(val_loader.dataset.classes))
     plt.savefig(os.path.join(args.pngdir, 'D_{}_{}.png'.format(prefix, str(threshold))))
     plt.close()
-    temp = (d, target_plot, path_list[0])
-    with open(os.path.join(args.pngdir, "d_list.csv"), "w") as f:
-        csvdata = list(zip(*temp))
-        writer = csv.writer(f)
-        for s in csvdata:
-            writer.writerow(s)
+    temp = (d, target_plot, path_list[0], latest_learned_image)
+    # with open(os.path.join(args.pngdir, "d_list.csv"), "w") as f:
+    #     csvdata = list(zip(*temp))
+    #     writer = csv.writer(f)
+    #     for s in csvdata:
+    #         writer.writerow(s)
     with open(os.path.join(args.pngdir, 'D_{}_{}.pcl'.format(prefix, str(threshold))), 'wb') as f:
         pickle.dump(temp, f)
 
