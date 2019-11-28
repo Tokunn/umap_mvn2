@@ -367,26 +367,6 @@ def get_model_layer(n_layer, args, ngpus_per_node):
     if not n_layer:
         return None, train_loader1000, train_loader1, val_loader
 
-    # # create model
-    # args.arch = 'mobilenet_v2'
-    # if args.pretrained:
-    #     print("=> using pre-trained model '{}'".format(args.arch))
-    #     model = models.__dict__[args.arch](pretrained=True)
-    # else:
-    #     print("=> creating model '{}'".format(args.arch))
-    #     model = models.__dict__[args.arch]()
-    # # mobilenetv2
-    # model = torch.hub.load('pytorch/vision', 'mobilenet_v2', pretrained=True)
-    # model.classifier = nn.Sequential(*list(model.classifier.children())[:-2])
-    # if n_layer:
-    #     if args.flatten:
-    #         model = nn.Sequential(*list(model.features.children())[:n_layer])
-    #         print(model)
-    #     else:
-    #         model.features = nn.Sequential(*list(model.features.children())[:n_layer])
-    #         print(len(model.features))
-    #     print(len(model))
-
     model = FlattenMobilenetV2(n_layer, args.flatten)
     torch.onnx.export(model, torch.randn(10, 3, 224, 224), 'mobilenet_v2.onnx', verbose=True)
 
@@ -421,35 +401,6 @@ def get_model_layer(n_layer, args, ngpus_per_node):
             model.cuda()
         else:
             model = torch.nn.DataParallel(model).cuda()
-
-    # # define loss function (criterion) and optimizer
-    # criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-
-    # optimizer = torch.optim.SGD(model.parameters(), args.lr,
-    #                             momentum=args.momentum,
-    #                             weight_decay=args.weight_decay)
-
-    # # optionally resume from a checkpoint
-    # if args.resume:
-    #     if os.path.isfile(args.resume):
-    #         print("=> loading checkpoint '{}'".format(args.resume))
-    #         if args.gpu is None:
-    #             checkpoint = torch.load(args.resume)
-    #         else:
-    #             # Map model to be loaded to specified single gpu.
-    #             loc = 'cuda:{}'.format(args.gpu)
-    #             checkpoint = torch.load(args.resume, map_location=loc)
-    #         args.start_epoch = checkpoint['epoch']
-    #         best_acc1 = checkpoint['best_acc1']
-    #         if args.gpu is not None:
-    #             # best_acc1 may be from a checkpoint from a different GPU
-    #             best_acc1 = best_acc1.to(args.gpu)
-    #         model.load_state_dict(checkpoint['state_dict'])
-    #         optimizer.load_state_dict(checkpoint['optimizer'])
-    #         print("=> loaded checkpoint '{}' (epoch {})"
-    #               .format(args.resume, checkpoint['epoch']))
-    #     else:
-    #         print("=> no checkpoint found at '{}'".format(args.resume))
 
     # switch to evaluate mode
     model.eval()
@@ -686,37 +637,6 @@ def train_good(train_loader, val_loader, model,
             print("pseudo_target", pseudo_target.shape)
             pseudo_d, pseudo_stddev = calc_errorval(pseudo_output, sub_vec)
             calc_roc(pseudo_target, pseudo_d, args, prefix="pseudo_{}".format(test_threshold), aucg=None)
-
-        # # -------------------test---------------------------------
-        # # 生成した正常部分空間を以上データを含めて評価(可視化用)
-        # train_loader.sampler.set_state("test")
-        # outputs_list = []
-        # targets_list = []
-        # for i, (images, target) in enumerate(train_loader):
-        #     if args.gpu is not None:
-        #         images = images.cuda(args.gpu, non_blocking=True)
-        #     target = target.cuda(args.gpu, non_blocking=True)
-
-        #     # compute output
-        #     output = model(images)
-        #     output = output.cpu()
-        #     target = target.cpu()
-        #     # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
-        #     # output = scaler.transform(output)
-        #     outputs_list.append(output)
-        #     targets_list.append(target)
-
-        # output = torch.cat(outputs_list).numpy()
-        # target = torch.cat(targets_list).numpy()
-
-        # print("### Calc Error")
-        # d, _ = calc_errorval(output, sub_vec)
-
-        # plt.figure()
-        # plt.ylim(0, 1)
-        # plt.scatter(range(len(d)), d, c=target, cmap=cm.nipy_spectral)
-        # plt.colorbar()
-        # plt.savefig('d_{}_{}.png'.format(str(test_threshold), k_count))
 
     print("Train good Time {}".format(time.time() - start_time))
 
