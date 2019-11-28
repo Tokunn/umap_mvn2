@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 # import csv
 import shutil
 import random
@@ -101,6 +102,7 @@ parser.add_argument('--useparam', default=0, type=float)
 parser.add_argument('--usekernel', action='store_true')
 parser.add_argument('--usepseudo', action='store_true')
 parser.add_argument('--usereject', action='store_true')
+parser.add_argument('--flatten', action='store_true')
 
 best_acc1 = 0
 
@@ -124,8 +126,8 @@ def DEBUG_SHOW(images):
 
 
 def saveimg(images, args, prefix=""):
-    unnorm = UnNormalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
+    # unnorm = UnNormalize(mean=[0.485, 0.456, 0.406],
+    #                      std=[0.229, 0.224, 0.225])
     for i, img in enumerate(images):
         # img = deepcopy(unnorm(img[0]))
         # img = img.numpy()
@@ -283,6 +285,26 @@ def main():
         main_worker(args.gpu, ngpus_per_node, args)
 
 
+class FlattenMobilenetV2(nn.Module):
+    def __init__(self, n_layer, flatten):
+        super(FlattenMobilenetV2, self).__init__()
+        # mobilenetv2
+        model = torch.hub.load('pytorch/vision', 'mobilenet_v2', pretrained=True)
+        model = nn.Sequential(*list(model.features.children())[:n_layer])
+        print(model)
+        print(len(model))
+        self.model = model
+        self.flatten = flatten
+
+    def forward(self, x):
+        x = self.model(x)
+        if self.flatten:
+            x = torch.flatten(x, 1)
+        else:
+            x = x.mean([2, 3])
+        return x
+
+
 def get_model_layer(n_layer, args, ngpus_per_node):
     # Data loading code
     traindir = os.path.join(args.data, 'train')
@@ -345,21 +367,28 @@ def get_model_layer(n_layer, args, ngpus_per_node):
     if not n_layer:
         return None, train_loader1000, train_loader1, val_loader
 
-    # create model
-    args.arch = 'mobilenet_v2'
-    if args.pretrained:
-        print("=> using pre-trained model '{}'".format(args.arch))
-        model = models.__dict__[args.arch](pretrained=True)
-    else:
-        print("=> creating model '{}'".format(args.arch))
-        model = models.__dict__[args.arch]()
-    # mobilenetv2
-    model = torch.hub.load('pytorch/vision', 'mobilenet_v2', pretrained=True)
-    model.classifier = nn.Sequential(*list(model.classifier.children())[:-2])
-    if n_layer:
-        model.features = nn.Sequential(*list(model.features.children())[:n_layer])
-        print(model)
-        print(len(model.features))
+    # # create model
+    # args.arch = 'mobilenet_v2'
+    # if args.pretrained:
+    #     print("=> using pre-trained model '{}'".format(args.arch))
+    #     model = models.__dict__[args.arch](pretrained=True)
+    # else:
+    #     print("=> creating model '{}'".format(args.arch))
+    #     model = models.__dict__[args.arch]()
+    # # mobilenetv2
+    # model = torch.hub.load('pytorch/vision', 'mobilenet_v2', pretrained=True)
+    # model.classifier = nn.Sequential(*list(model.classifier.children())[:-2])
+    # if n_layer:
+    #     if args.flatten:
+    #         model = nn.Sequential(*list(model.features.children())[:n_layer])
+    #         print(model)
+    #     else:
+    #         model.features = nn.Sequential(*list(model.features.children())[:n_layer])
+    #         print(len(model.features))
+    #     print(len(model))
+
+    model = FlattenMobilenetV2(n_layer, args.flatten)
+    torch.onnx.export(model, torch.randn(10, 3, 224, 224), 'mobilenet_v2.onnx', verbose=True)
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -588,7 +617,8 @@ def train_good(train_loader, val_loader, model,
 
             print(time.time() - end)
 
-            if sampler_state == 'good':
+            # if sampler_state == 'good':
+            if final:
                 testall(val_loader, model, args, test_threshold,
                         sub_vec, sub_val, learned_good_image, prefix="good", aucg=aucg, kernel_inst=kernel_inst)
             elif k_count == 0:
@@ -615,7 +645,9 @@ def train_good(train_loader, val_loader, model,
 
         # ----------------validation------------------------
         # 生成した正常部分空間を正常データのみで評価(寄与率決定用)
-        train_loader.sampler.set_state("good")
+        # DEBUG 寄与率決定の判断をgoodではなくgood_valでやる
+        # train_loader.sampler.set_state("good")
+        train_loader.sampler.set_state("good_val")
         outputs_list = []
         targets_list = []
         for i, (images, target) in enumerate(train_loader):
@@ -887,9 +919,12 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
 
 def calc_SVD(features):
     # svd
+    print("SVD...", end=' ')
+    sys.stdout.flush()
     U, s, V = np.linalg.svd(features)
     e_val = s**2 / features.shape[0]
     e_vec = V.T
+    print("finish")
     return e_vec, e_val
 
 
