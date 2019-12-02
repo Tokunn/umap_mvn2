@@ -23,5 +23,5 @@ cd ~/Documents/umap_mnv2
 # python3 incremental_pca.py $k --batch-size=100 --kfold=1 --pngdir=output/$kk._mbn_$i.$j --prmc=1 --uselayer=$j
 # python3 incremental_pca.py $k --batch-size=100 --kfold=1 --pngdir=output3/$kk._mbn_$i.$j.$l --prmc=1 --uselayer=$j --seed=$l
 # python3 incremental_pca.py $k --batch-size=100 --kfold=1 --pngdir=output_kernel/$kk._mbn_$i.$j.$l --prmc=1 --uselayer=$j --seed=$l --usekernel
-python3 incremental_pca.py $k --batch-size=100 --kfold=1 --pngdir=output4all_flatten/$kk._mbn_$i.$j.$l.$m --prmc=1 --uselayer=$j --seed=$l --useparam=$m
+python3 incremental_pca.py $k --batch-size=100 --kfold=1 --pngdir=output4all_reject_10/$kk._mbn_$i.$j.$l.$m --prmc=1 --uselayer=$j --seed=$l --useparam=$m --judge --usereject
 # python3 incremental_pca.py $k --batch-size=100 --kfold=4 --pngdir=output4all_kfold_val/$kk._mbn_$i.$l --prmc=1 --seed=$l

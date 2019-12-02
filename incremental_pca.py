@@ -8,7 +8,9 @@ import time
 import warnings
 import umap
 import pickle
+import math
 # from scipy.sparse.csgraph import connected_components
+import scipy.stats as stats
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 # from sklearn.decomposition import PCA
@@ -103,6 +105,7 @@ parser.add_argument('--usekernel', action='store_true')
 parser.add_argument('--usepseudo', action='store_true')
 parser.add_argument('--usereject', action='store_true')
 parser.add_argument('--flatten', action='store_true')
+parser.add_argument('--judge', action='store_true')
 
 best_acc1 = 0
 
@@ -233,10 +236,15 @@ class SaveAUCGraph(object):
     def __init__(self, pngpath):
         self.pngpath = pngpath
         self.auclist = []
+        self.acclist = []
 
     def add(self, auc):
         self.auclist.append(auc)
         self.save()
+
+    def addacc(self, acc):
+        self.acclist.append(acc)
+        self.saveacc()
 
     def save(self):
         plt.figure()
@@ -247,6 +255,16 @@ class SaveAUCGraph(object):
         plt.close()
         with open(os.path.join(self.pngpath, 'AUClog{}.pcl'.format(os.path.basename(self.pngpath))), 'wb') as f:
             pickle.dump(self.auclist, f)
+
+    def saveacc(self):
+        plt.figure()
+        plt.ylim(0, 1)
+        plt.plot(self.acclist, label="Max = %.2f" % max(self.acclist))
+        plt.legend()
+        plt.savefig(os.path.join(self.pngpath, 'ACClog{}.png'.format(os.path.basename(self.pngpath))))
+        plt.close()
+        with open(os.path.join(self.pngpath, 'ACClog{}.pcl'.format(os.path.basename(self.pngpath))), 'wb') as f:
+            pickle.dump(self.acclist, f)
 
 
 def main():
@@ -441,6 +459,7 @@ def main_worker(gpu, ngpus_per_node, args):
         layer_list = [0, 6, 12, 18]
     results = {}
     d_good_list = {}
+    th_gooddef_results = {}
     for test_layer in layer_list:
         model, train_loader1000, train_loader1, val_loader = get_model_layer(test_layer, args, ngpus_per_node)
         # しきい値の決定
@@ -450,26 +469,31 @@ def main_worker(gpu, ngpus_per_node, args):
             thresholds_list = [0.85, 0.9, 0.95, 0.99, 0.999]
         for test_threshold in thresholds_list:
             d_average = 0
+            th_gooddef_average = 0.0
             for k_count in range(args.kfold):
                 # Train
                 print("\n#" + "="*30 + ' train_good SVD ' + str(test_layer) + '/' + str(test_threshold) + '/' + str(k_count) + ' ' + "="*30 + "#")
                 train_loader1000.sampler.set_k(k_count)
                 print("train index", train_loader1000.sampler.train)
                 print("val_index", train_loader1000.sampler.val)
-                d_result, d_good = train_good(train_loader1000, val_loader,
-                                              model, args,
-                                              k_count, test_threshold, "good_train")
+                d_result, d_good, th_gooddef = train_good(train_loader1000, val_loader,
+                                                          model, args,
+                                                          k_count, test_threshold, "good_train")
                 d_average += d_result
+                th_gooddef_average += th_gooddef
                 d_good_list[(test_layer, test_threshold, k_count)] = d_good
             results[(test_layer, test_threshold)] = d_average/args.kfold
+            th_gooddef_results[(test_layer, test_threshold)] = th_gooddef_average/args.kfold
             print(str(test_threshold), d_average/args.kfold)
+            print(str(test_threshold), th_gooddef_average/args.kfold)
         print(results)
     with open(os.path.join(args.pngdir, 'paramsearch.pcl'), 'wb') as f:
         pickle.dump(results, f)
     with open(os.path.join(args.pngdir, 'd_good_list.pcl'), 'wb') as f:
         pickle.dump(d_good_list, f)
     layer, threshold = min(results, key=results.get)
-    print(layer, threshold, results[(layer, threshold)])
+    gooddef_threshold = th_gooddef_results[(layer, threshold)]
+    print(layer, threshold, results[(layer, threshold)], gooddef_threshold)
 
     # 決めたしきい値を用いて、すべてのデータで正常部分空間を作る
     model, train_loader1000, train_loader1, val_loader = get_model_layer(layer, args, ngpus_per_node)
@@ -481,15 +505,17 @@ def main_worker(gpu, ngpus_per_node, args):
     sub_vec, sub_val, good_mean, good_stddev, kernel_inst = train_good(train_loader1000, val_loader,
                                                                        model, args,
                                                                        k_count, threshold, "good",
+                                                                       gooddef_threshold=gooddef_threshold,
                                                                        aucg=aucg,
                                                                        final=True)
 
     # それに対して異常データを追加していく
-    train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev, aucg=aucg, kernel_inst=kernel_inst)
+    train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev,
+                    gooddef_threshold=gooddef_threshold, aucg=aucg, kernel_inst=kernel_inst)
 
 
 def train_good(train_loader, val_loader, model,
-               args, k_count, test_threshold, sampler_state, aucg=None, final=False):
+               args, k_count, test_threshold, sampler_state, gooddef_threshold=None, aucg=None, final=False):
     start_time = time.time()
 
     # Train
@@ -571,7 +597,7 @@ def train_good(train_loader, val_loader, model,
             # if sampler_state == 'good':
             if final:
                 testall(val_loader, model, args, test_threshold,
-                        sub_vec, sub_val, learned_good_image, prefix="good", aucg=aucg, kernel_inst=kernel_inst)
+                        sub_vec, sub_val, learned_good_image, prefix="good", gooddef_threshold=gooddef_threshold, aucg=aucg, kernel_inst=kernel_inst)
             elif k_count == 0:
                 testall(val_loader, model, args, test_threshold,
                         sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=None, kernel_inst=kernel_inst)
@@ -628,6 +654,27 @@ def train_good(train_loader, val_loader, model,
         print("### Calc Error")
         good_d, good_stddev = calc_errorval(output, sub_vec)
 
+        gooddef_threshold = None
+        if args.judge and not final:
+            # pisson分布を仮定して正常と異常の閾値を決定
+            a_hat, loc_hat, scale_hat = stats.gamma.fit(good_d)
+            print("a_hat, loc_hat, scale_hat", a_hat, loc_hat, scale_hat)
+            lambda_hat = stats.gamma.mean(a_hat, loc=loc_hat, scale=scale_hat)
+            p_mean, p_var, p_skew, p_kurt = stats.gamma.stats(a_hat, moments='mvsk', scale=scale_hat, loc=loc_hat)
+            gooddef_threshold = p_mean + 1*math.sqrt(p_var)
+            print("good or defect threshold", "%.5f" % gooddef_threshold, lambda_hat)
+            # print("poisson mean", "%.5f" % lambda_hat)
+            # print("good_d mean", "%.5f" % np.mean(good_d))
+            xs = np.linspace(stats.gamma.ppf(0.01, a_hat, scale=scale_hat, loc=loc_hat),
+                             stats.gamma.ppf(0.99, a_hat, scale=scale_hat, loc=loc_hat), 100)
+            ps_hat = stats.gamma.pdf(xs, a_hat, loc=loc_hat, scale=scale_hat)
+            fig = plt.figure(1, figsize=(12, 8))
+            ax = fig.add_subplot(111)
+            ax.plot(xs, ps_hat, 'g-', lw=2, label='fitted pdf')
+            ax.hist(good_d, density=True, histtype='stepfilled', alpha=0.2, bins=20)
+            ax.grid(True)
+            fig.savefig(os.path.join(args.pngdir, "poisson_{}.png".format(k_count)))
+
         if args.usepseudo:
             # ----------------validation------------------------
             # 生成した部分空間を擬似データのAUCで評価（寄与率決定用）
@@ -644,10 +691,11 @@ def train_good(train_loader, val_loader, model,
     if final:
         return sub_vec, sub_val, np.mean(good_d), good_stddev, kernel_inst
     else:
-        return np.mean(good_d) + good_stddev*10, good_d
+        return np.mean(good_d) + good_stddev*10, good_d, gooddef_threshold
 
 
-def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev, aucg, kernel_inst=None):
+def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev,
+                    aucg, gooddef_threshold, kernel_inst=None):
 
     # Train
     # 異常データを追加していく
@@ -688,9 +736,11 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             print("input shape (model output)", output.shape)
 
             if args.usereject:
-                # dを用いて学習するかどうかを判定
+                # # dを用いて学習するかどうかを判定
                 def_d, _ = calc_errorval(output, sub_vec)
-                if ((good_mean + 3*good_mean) >= def_d[0]):
+                # if ((good_mean + 3*good_mean) >= def_d[0]):
+                # gooddef_thresholdを用いて学習するかどうか判定
+                if (gooddef_threshold <= def_d):
                     print("[[[Reject]]]")
                     continue
 
@@ -731,10 +781,11 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
 
             testall(val_loader, model, args, threshold, sub_vec,
                     sub_val, learned_defect_image, prefix="test_{}".format(i),
+                    gooddef_threshold=gooddef_threshold,
                     aucg=aucg, kernel_inst=kernel_inst)
 
 
-def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", aucg=None, kernel_inst=None):
+def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", gooddef_threshold=None, aucg=None, kernel_inst=None):
     start_time = time.time()
     # -------------------test---------------------------------
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
@@ -771,13 +822,27 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     # UMAPの計算
     # calc_umap(output, target, prefix=prefix)
 
-    # ROCとAUCの計算
+    # テスト用データの取り出し
     labelg = val_loader.dataset.class_to_idx["good"]
     labeld = val_loader.dataset.class_to_idx["defective"]
     roc_label = np.where((target == labelg) | (target == labeld))
     roc_d = d[roc_label]
     roc_targetd = target[roc_label]
+
+    # ROCとAUCの計算
     calc_roc(roc_targetd, roc_d, args, prefix=prefix, aucg=aucg)
+
+    # gooddef_thresholdを使って異常検知
+    if gooddef_threshold is not None:
+        judge = np.zeros(roc_d.shape[0])
+        judge[np.where(roc_d <= gooddef_threshold)] = labelg
+        judge[np.where(roc_d > gooddef_threshold)] = labeld
+        judge_diff = np.sum(roc_targetd == judge)
+        print("judge_diff", judge_diff)
+        acc = judge_diff/roc_d.shape[0]
+        print("acc", acc)
+        if aucg is not None:
+            aucg.addacc(acc)
 
     # # 固有値のプロット
     # plt.figure()
