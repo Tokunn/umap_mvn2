@@ -18,11 +18,12 @@ for k in glob.glob(os.path.expanduser('~/Documents/umap_mnv2/dataset_all/*')):
                 # for m in [0.000]:
                 # for m in [0.85, 0.9, 0.95, 0.99, 0.999]:
                 for m in [0.999]:
-                    scriptname = 'josbscript'+str(os.path.basename(k))+'_'+str(i)+'_'+str(j)+'_'+str(l)+'_'+str(m)+'.sh'
-                    scripts.append(scriptname)
-                    print(scriptname)
-                    with open(scriptname, 'w') as f:
-                        f.write(script.format(str(i), str(j), str(k), str(os.path.basename(k)), str(l), str(m)))
+                    for mul_sig in [1, 2, 3, 4, 5]:
+                        scriptname = 'josbscript'+str(os.path.basename(k))+'_'+str(i)+'_'+str(j)+'_'+str(l)+'_'+str(m)+'_'+str(mul_sig)+'.sh'
+                        scripts.append(scriptname)
+                        print(scriptname)
+                        with open(scriptname, 'w') as f:
+                            f.write(script.format(str(i), str(j), str(k), str(os.path.basename(k)), str(l), str(m), str(mul_sig)))
 
 print(scripts)
 if (input('continue ? >')[0] == 'y'):

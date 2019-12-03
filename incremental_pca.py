@@ -101,6 +101,7 @@ parser.add_argument('--pngdir', default='.', type=str)
 parser.add_argument('--delheadvec', default=0, type=int)
 parser.add_argument('--uselayer', default=0, type=int)
 parser.add_argument('--useparam', default=0, type=float)
+parser.add_argument('--mul_sig', default=3.0, type=float)
 parser.add_argument('--usekernel', action='store_true')
 parser.add_argument('--usepseudo', action='store_true')
 parser.add_argument('--usereject', action='store_true')
@@ -661,7 +662,7 @@ def train_good(train_loader, val_loader, model,
             print("a_hat, loc_hat, scale_hat", a_hat, loc_hat, scale_hat)
             lambda_hat = stats.gamma.mean(a_hat, loc=loc_hat, scale=scale_hat)
             p_mean, p_var, p_skew, p_kurt = stats.gamma.stats(a_hat, moments='mvsk', scale=scale_hat, loc=loc_hat)
-            gooddef_threshold = p_mean + 1*math.sqrt(p_var)
+            gooddef_threshold = p_mean + args.mul_sig * math.sqrt(p_var)
             print("good or defect threshold", "%.5f" % gooddef_threshold, lambda_hat)
             # print("poisson mean", "%.5f" % lambda_hat)
             # print("good_d mean", "%.5f" % np.mean(good_d))
@@ -740,7 +741,8 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
                 def_d, _ = calc_errorval(output, sub_vec)
                 # if ((good_mean + 3*good_mean) >= def_d[0]):
                 # gooddef_thresholdを用いて学習するかどうか判定
-                if (gooddef_threshold <= def_d):
+                # 閾値を下回ったらReject
+                if (gooddef_threshold >= def_d):
                     print("[[[Reject]]]")
                     continue
 
