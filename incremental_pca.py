@@ -107,6 +107,7 @@ parser.add_argument('--usepseudo', action='store_true')
 parser.add_argument('--usereject', action='store_true')
 parser.add_argument('--flatten', action='store_true')
 parser.add_argument('--judge', action='store_true')
+parser.add_argument('--gamma', action='store_true')
 
 best_acc1 = 0
 
@@ -387,7 +388,7 @@ def get_model_layer(n_layer, args, ngpus_per_node):
         return None, train_loader1000, train_loader1, val_loader
 
     model = FlattenMobilenetV2(n_layer, args.flatten)
-    torch.onnx.export(model, torch.randn(10, 3, 224, 224), 'mobilenet_v2.onnx', verbose=True)
+    torch.onnx.export(model, torch.randn(10, 3, 224, 224), 'mobilenet_v2.onnx', verbose=False)
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -481,8 +482,9 @@ def main_worker(gpu, ngpus_per_node, args):
                                                           model, args,
                                                           k_count, test_threshold, "good_train")
                 d_average += d_result
-                th_gooddef_average += th_gooddef
+                th_gooddef_average += th_gooddef if th_gooddef is not None else 0.0
                 d_good_list[(test_layer, test_threshold, k_count)] = d_good
+                print("d_good, th_gooddef", np.mean(d_good), th_gooddef)
             results[(test_layer, test_threshold)] = d_average/args.kfold
             th_gooddef_results[(test_layer, test_threshold)] = th_gooddef_average/args.kfold
             print(str(test_threshold), d_average/args.kfold)
@@ -658,23 +660,46 @@ def train_good(train_loader, val_loader, model,
         gooddef_threshold = None
         if args.judge and not final:
             # pisson分布を仮定して正常と異常の閾値を決定
-            a_hat, loc_hat, scale_hat = stats.gamma.fit(good_d)
-            print("a_hat, loc_hat, scale_hat", a_hat, loc_hat, scale_hat)
-            lambda_hat = stats.gamma.mean(a_hat, loc=loc_hat, scale=scale_hat)
-            p_mean, p_var, p_skew, p_kurt = stats.gamma.stats(a_hat, moments='mvsk', scale=scale_hat, loc=loc_hat)
-            gooddef_threshold = p_mean + args.mul_sig * math.sqrt(p_var)
-            print("good or defect threshold", "%.5f" % gooddef_threshold, lambda_hat)
-            # print("poisson mean", "%.5f" % lambda_hat)
-            # print("good_d mean", "%.5f" % np.mean(good_d))
-            xs = np.linspace(stats.gamma.ppf(0.01, a_hat, scale=scale_hat, loc=loc_hat),
-                             stats.gamma.ppf(0.99, a_hat, scale=scale_hat, loc=loc_hat), 100)
-            ps_hat = stats.gamma.pdf(xs, a_hat, loc=loc_hat, scale=scale_hat)
-            fig = plt.figure(1, figsize=(12, 8))
-            ax = fig.add_subplot(111)
-            ax.plot(xs, ps_hat, 'g-', lw=2, label='fitted pdf')
-            ax.hist(good_d, density=True, histtype='stepfilled', alpha=0.2, bins=20)
-            ax.grid(True)
-            fig.savefig(os.path.join(args.pngdir, "poisson_{}.png".format(k_count)))
+            print("np.mean(good_d), min, max, np.std(good_d)", np.mean(good_d), np.min(good_d), np.max(good_d), np.std(good_d))
+            print("len(good_d)", len(good_d))
+            if args.gamma:
+                a_hat, loc_hat, scale_hat = stats.gamma.fit(good_d)
+                print("a_hat, loc_hat, scale_hat", a_hat, loc_hat, scale_hat)
+                lambda_hat = stats.gamma.mean(a_hat, loc=loc_hat, scale=scale_hat)
+                p_mean, p_var, p_skew, p_kurt = stats.gamma.stats(a_hat, moments='mvsk', scale=scale_hat, loc=loc_hat)
+                gooddef_threshold = p_mean + args.mul_sig * math.sqrt(p_var)
+                print("good or defect threshold", "%.5f" % gooddef_threshold, lambda_hat)
+                # print("poisson mean", "%.5f" % lambda_hat)
+                # print("good_d mean", "%.5f" % np.mean(good_d))
+                xs = np.linspace(stats.gamma.ppf(0.01, a_hat, scale=scale_hat, loc=loc_hat),
+                                 stats.gamma.ppf(0.99, a_hat, scale=scale_hat, loc=loc_hat), 100)
+                ps_hat = stats.gamma.pdf(xs, a_hat, loc=loc_hat, scale=scale_hat)
+                fig = plt.figure(1, figsize=(12, 8))
+                ax = fig.add_subplot(111)
+                ax.plot(xs, ps_hat, 'g-', lw=2, label='fitted pdf')
+                ax.hist(good_d, density=True, histtype='stepfilled', alpha=0.2, bins=20)
+                ax.grid(True)
+                fig.savefig(os.path.join(args.pngdir, "poisson_{}.png".format(k_count)))
+
+            else:  # norm
+                print("norm")
+                loc_hat, scale_hat = stats.norm.fit(good_d)
+                print("loc_hat, scale_hat", loc_hat, scale_hat)
+                lambda_hat = stats.norm.mean(loc=loc_hat, scale=scale_hat)
+                p_mean, p_var, p_skew, p_kurt = stats.norm.stats(moments='mvsk', scale=scale_hat, loc=loc_hat)
+                gooddef_threshold = p_mean + args.mul_sig * math.sqrt(p_var)
+                print("good or defect threshold", "%.5f" % gooddef_threshold, lambda_hat)
+                # print("poisson mean", "%.5f" % lambda_hat)
+                # print("good_d mean", "%.5f" % np.mean(good_d))
+                xs = np.linspace(stats.norm.ppf(0.01, scale=scale_hat, loc=loc_hat),
+                                 stats.norm.ppf(0.99, scale=scale_hat, loc=loc_hat), 100)
+                ps_hat = stats.norm.pdf(xs, loc=loc_hat, scale=scale_hat)
+                fig = plt.figure(1, figsize=(12, 8))
+                ax = fig.add_subplot(111)
+                ax.plot(xs, ps_hat, 'g-', lw=2, label='fitted pdf')
+                ax.hist(good_d, density=True, histtype='stepfilled', alpha=0.2, bins=20)
+                ax.grid(True)
+                fig.savefig(os.path.join(args.pngdir, "norm_{}.png".format(k_count)))
 
         if args.usepseudo:
             # ----------------validation------------------------
