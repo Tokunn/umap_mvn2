@@ -18,8 +18,8 @@ for k in glob.glob(os.path.expanduser('~/Documents/umap_mvn2/dataset_all/*')):
                 # for m in [0.000]:
                 # for m in [0.85, 0.9, 0.95, 0.99, 0.999]:
                 for m in [0.999]:
-                    # for mul_sig in [0]:
-                    for mul_sig in [1, 2, 3, 4, 5]:
+                    # for mul_sig in [1, 2, 3, 4, 5]:
+                    for mul_sig in [0]:
                         scriptname = 'josbscript'+str(os.path.basename(k))+'_'+str(i)+'_'+str(j)+'_'+str(l)+'_'+str(m)+'_'+str(mul_sig)+'.sh'
                         scripts.append(scriptname)
                         print(scriptname)

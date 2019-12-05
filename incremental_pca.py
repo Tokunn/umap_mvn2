@@ -239,6 +239,8 @@ class SaveAUCGraph(object):
         self.pngpath = pngpath
         self.auclist = []
         self.acclist = []
+        self.dlist = []
+        self.updlist = []
 
     def add(self, auc):
         self.auclist.append(auc)
@@ -247,6 +249,14 @@ class SaveAUCGraph(object):
     def addacc(self, acc):
         self.acclist.append(acc)
         self.saveacc()
+
+    def addd(self, d):
+        self.dlist.append(d)
+        self.saved()
+
+    def addupd(self, upd):
+        self.updlist.append(upd)
+        self.saveupd()
 
     def save(self):
         plt.figure()
@@ -267,6 +277,22 @@ class SaveAUCGraph(object):
         plt.close()
         with open(os.path.join(self.pngpath, 'ACClog{}.pcl'.format(os.path.basename(self.pngpath))), 'wb') as f:
             pickle.dump(self.acclist, f)
+
+    def saved(self):
+        plt.figure()
+        plt.plot(self.dlist)
+        plt.savefig(os.path.join(self.pngpath, 'Dlog{}.png'.format(os.path.basename(self.pngpath))))
+        plt.close()
+        with open(os.path.join(self.pngpath, 'Dlog{}.pcl'.format(os.path.basename(self.pngpath))), 'wb') as f:
+            pickle.dump(self.dlist, f)
+
+    def saveupd(self):
+        plt.figure()
+        plt.plot(self.updlist)
+        plt.savefig(os.path.join(self.pngpath, 'UPDlog{}.png'.format(os.path.basename(self.pngpath))))
+        plt.close()
+        with open(os.path.join(self.pngpath, 'UPDlog{}.pcl'.format(os.path.basename(self.pngpath))), 'wb') as f:
+            pickle.dump(self.updlist, f)
 
 
 def main():
@@ -796,12 +822,19 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             sub_val = e_val[:-1]
 
             # 部分空間の更新を確認
-            p1 = sub_vec @ sub_vec.T
+            # p1 = sub_vec @ sub_vec.T
+            p1 = sub_vec
             if p0 is not None:
-                p_e_val, _ = np.linalg.eigh(p0 @ p1 @ p0)
-                p_e_val = p_e_val[::-1]
-                # print(p_e_val[:len(sub_val)])
+                upd = np.linalg.norm(p0.T @ p1)
+                print("p0.T @ p1", upd)
+                aucg.addupd(upd)
+                # p_e_val, _ = np.linalg.eigh(p0 @ p1 @ p0)
+                # p_e_val = p_e_val[::-1]
             p0 = p1
+
+            d, _ = calc_errorval(output, sub_vec)
+            aucg.addd(d)
+            print("d", d)
 
             stime = time.time() - end
             print("Time : ", f"{stime:.3f}")

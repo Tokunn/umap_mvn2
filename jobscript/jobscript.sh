@@ -24,6 +24,6 @@ cd ~/Documents/umap_mvn2
 # python3 incremental_pca.py $k --batch-size=100 --kfold=1 --pngdir=output/$kk._mbn_$i.$j --prmc=1 --uselayer=$j
 # python3 incremental_pca.py $k --batch-size=100 --kfold=1 --pngdir=output3/$kk._mbn_$i.$j.$l --prmc=1 --uselayer=$j --seed=$l
 # python3 incremental_pca.py $k --batch-size=100 --kfold=1 --pngdir=output_kernel/$kk._mbn_$i.$j.$l --prmc=1 --uselayer=$j --seed=$l --usekernel
-python3 incremental_pca.py $k --batch-size=100 --kfold=5 --pngdir=output4all_reject_10_sigma_norm/$kk._mbn_$i.$j.$l.$m.$ms --prmc=1 --uselayer=$j --seed=$l --useparam=$m --mul_sig=$ms --judge --usereject
-# python3 incremental_pca.py $k --batch-size=100 --kfold=5 --pngdir=output4all/$kk._mbn_$i.$j.$l.$m.$ms --prmc=1 --uselayer=$j --seed=$l --useparam=$m --mul_sig=$ms --judge
+# python3 incremental_pca.py $k --batch-size=100 --kfold=5 --pngdir=output4all_reject_10_sigma_norm/$kk._mbn_$i.$j.$l.$m.$ms --prmc=1 --uselayer=$j --seed=$l --useparam=$m --mul_sig=$ms --judge --usereject
+python3 incremental_pca.py $k --batch-size=100 --kfold=5 --pngdir=output4all/$kk._mbn_$i.$j.$l.$m.$ms --prmc=1 --uselayer=$j --seed=$l --useparam=$m --mul_sig=$ms --judge
 # python3 incremental_pca.py $k --batch-size=100 --kfold=5 --pngdir=output4all_kfold_val/$kk._mbn_$i.$l --prmc=1 --seed=$l
