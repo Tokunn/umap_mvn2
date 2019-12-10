@@ -108,6 +108,8 @@ parser.add_argument('--usereject', action='store_true')
 parser.add_argument('--flatten', action='store_true')
 parser.add_argument('--judge', action='store_true')
 parser.add_argument('--gamma', action='store_true')
+parser.add_argument('--n_images', default=None, type=int)
+parser.add_argument('--clear_gn', action='store_true')
 
 best_acc1 = 0
 
@@ -162,10 +164,14 @@ class UnNormalize(object):
 
 class KFoldSampler(torch.utils.data.Sampler):
 
-    def __init__(self, data_source, k=5, seed=None):
+    def __init__(self, data_source, args, k=5, seed=None):
         self.data_source = data_source
         self.good_index = [i for i, (x, y) in enumerate(data_source.imgs) if data_source.classes[int(y)] == "good"]
         self.defective_index = [i for i, (x, y) in enumerate(data_source.imgs) if data_source.classes[int(y)] == "defective"]
+        if args.n_images is not None:
+            self.good_index = np.tile(self.good_index, np.max((1, np.ceil(args.n_images/len(self.good_index)).astype(np.int))))
+            self.good_index = self.good_index[:args.n_images]
+            print("n_images : ", len(self.good_index))
         np.random.seed(seed)
         np.random.shuffle(self.good_index)
         np.random.shuffle(self.defective_index)
@@ -375,7 +381,7 @@ def get_model_layer(n_layer, args, ngpus_per_node):
             ]))
     print("Train", train_dataset.classes)
 
-    train_sampler = KFoldSampler(train_dataset, seed=args.seed, k=5)
+    train_sampler = KFoldSampler(train_dataset, seed=args.seed, args=args, k=5)
 
     train_loader1000 = torch.utils.data.DataLoader(
         train_dataset,
@@ -553,9 +559,10 @@ def train_good(train_loader, val_loader, model,
         sub_vec = None
         sub_val = None
         train_loader.sampler.set_state(sampler_state)
+        outputs_list = []
+        targets_list = []
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
             learned_good_image = images.numpy()
-            assert i == 0
             # DEBUG_SHOW(images)
             end = time.time()
             # Reverse order
@@ -572,74 +579,72 @@ def train_good(train_loader, val_loader, model,
             else:
                 # 画像を表示したい
                 output = images.reshape(images.shape[0], -1)
-            output = output.cpu().numpy()
-            target = target.cpu().numpy()
+            output = output.cpu()
+            target = target.cpu()
 
-            # カーネルを使用
-            kernel_inst = None
-            if args.usekernel:
-                kernel_inst = kernellib.UseKernel(kernel="rbf")
-                kernel_inst.fit(output)
-                output = kernel_inst.transform(output)
+            outputs_list.append(output)
+            targets_list.append(target)
 
-            # normlization
-            # scaler = MinMaxScaler()
-            # print(scaler.fit(output))
-            # output = scaler.transform(output)
-            # output = output.numpy()
-            # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
+        output = torch.cat(outputs_list).numpy()
+        target = torch.cat(targets_list).numpy()
 
-            print("### Calc eigenvalue, eigenvector")
-            print("input shape (model output)", output.shape)
-            # SVDを用いた正常部分空間作成
-            if (i == 0):
-                e_vec, e_val = calc_SVD(output)
+        # カーネルを使用
+        kernel_inst = None
+        if args.usekernel:
+            kernel_inst = kernellib.UseKernel(kernel="rbf")
+            kernel_inst.fit(output)
+            output = kernel_inst.transform(output)
 
-            # インクリメンタルPCAを用いた更新
-            else:
-                assert False
-                # incremental
-                print("Incremental")
-                e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i)
+        # normlization
+        # scaler = MinMaxScaler()
+        # print(scaler.fit(output))
+        # output = scaler.transform(output)
+        # output = output.numpy()
+        # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
 
-            print("e_val.shape", e_val.shape)
-            # print("e_val", e_val)
-            print("e_vec.shape", e_vec.shape)
-            # print("e_vec", e_vec)
-            # plt.figure()
-            # plt.plot(e_val)
-            # plt.savefig('E_VAL.png')
-            # plt.close()
+        print("### Calc eigenvalue, eigenvector")
+        print("input shape (model output)", output.shape)
+        # SVDを用いた正常部分空間作成
+        e_vec, e_val = calc_SVD(output)
 
-            # subspace
-            # 次元を落として部分空間を作成
-            print("### Calc Subspace")
-            if args.delheadvec:
-                # 最初に頭から指定個の基底を落とす
-                e_vec = e_vec.T[args.delheadvec:].T
-                e_val = e_val[args.delheadvec:]
-            # 寄与率に応じて後ろを落とす
-            sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold, args)
+        print("e_val.shape", e_val.shape)
+        # print("e_val", e_val)
+        print("e_vec.shape", e_vec.shape)
+        # print("e_vec", e_vec)
+        # plt.figure()
+        # plt.plot(e_val)
+        # plt.savefig('E_VAL.png')
+        # plt.close()
 
-            print(time.time() - end)
+        # subspace
+        # 次元を落として部分空間を作成
+        print("### Calc Subspace")
+        if args.delheadvec:
+            # 最初に頭から指定個の基底を落とす
+            e_vec = e_vec.T[args.delheadvec:].T
+            e_val = e_val[args.delheadvec:]
+        # 寄与率に応じて後ろを落とす
+        sub_vec, sub_val = calc_sub_vec(e_vec, e_val, test_threshold, args)
 
-            # if sampler_state == 'good':
-            if final:
-                testall(val_loader, model, args, test_threshold,
-                        sub_vec, sub_val, learned_good_image, prefix="good", gooddef_threshold=gooddef_threshold, aucg=aucg, kernel_inst=kernel_inst)
-            elif k_count == 0:
-                testall(val_loader, model, args, test_threshold,
-                        sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=None, kernel_inst=kernel_inst)
+        print(time.time() - end)
 
-            if model is None:
-                # 画像を表示したい
-                for i, vec_img in enumerate(sub_vec.T):
-                    vec_img = np.reshape(vec_img, (3, RESIZE, RESIZE))
-                    vec_img = np.transpose(vec_img, (1, 2, 0))
-                    vec_img = (vec_img-vec_img.min()) / (vec_img.max()-vec_img.min())
-                    plt.imshow(vec_img)
-                    plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
-                    plt.close()
+        # if sampler_state == 'good':
+        if final:
+            testall(val_loader, model, args, test_threshold,
+                    sub_vec, sub_val, learned_good_image, prefix="good", gooddef_threshold=gooddef_threshold, aucg=aucg, kernel_inst=kernel_inst)
+        elif k_count == 0:
+            testall(val_loader, model, args, test_threshold,
+                    sub_vec, sub_val, learned_good_image, prefix="good_crossval_{}".format(test_threshold), aucg=None, kernel_inst=kernel_inst)
+
+        if model is None:
+            # 画像を表示したい
+            for i, vec_img in enumerate(sub_vec.T):
+                vec_img = np.reshape(vec_img, (3, RESIZE, RESIZE))
+                vec_img = np.transpose(vec_img, (1, 2, 0))
+                vec_img = (vec_img-vec_img.min()) / (vec_img.max()-vec_img.min())
+                plt.imshow(vec_img)
+                plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
+                plt.close()
 
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
@@ -804,7 +809,11 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             # インクリメンタルPCAを用いた更新
             # incremental
             print("Incremental")
-            e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, i+n_good, args, state="adddefective")
+            if args.clear_gn: # clear good number of image
+                nn = i
+            else:
+                nn = i+n_good
+            e_vec, e_val = incremental_PCA(output, sub_vec, sub_val, nn, args, state="adddefective")
 
             print("e_vec.shape", e_vec.shape)
             # print("e_vec", e_vec)
