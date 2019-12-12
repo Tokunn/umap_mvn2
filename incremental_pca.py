@@ -110,6 +110,7 @@ parser.add_argument('--judge', action='store_true')
 parser.add_argument('--gamma', action='store_true')
 parser.add_argument('--n_images', default=None, type=int)
 parser.add_argument('--clear_gn', action='store_true')
+parser.add_argument('--updgooddef', action='store_true')
 
 best_acc1 = 0
 
@@ -381,17 +382,19 @@ def get_model_layer(n_layer, args, ngpus_per_node):
             ]))
     print("Train", train_dataset.classes)
 
-    train_sampler = KFoldSampler(train_dataset, seed=args.seed, args=args, k=5)
+    # 同時に使用する場合用に別でサンプラーを保持
+    train_sampler1000 = KFoldSampler(train_dataset, seed=args.seed, args=args, k=5)
+    train_sampler1 = KFoldSampler(train_dataset, seed=args.seed, args=args, k=5)
 
     train_loader1000 = torch.utils.data.DataLoader(
         train_dataset,
-        sampler=train_sampler,
+        sampler=train_sampler1000,
         batch_size=1000, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
     train_loader1 = torch.utils.data.DataLoader(
         train_dataset,
-        sampler=train_sampler,
+        sampler=train_sampler1,
         batch_size=1, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
@@ -545,7 +548,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                                                        final=True)
 
     # それに対して異常データを追加していく
-    train_defective(train_loader1, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev,
+    train_defective(train_loader1, train_loader1000, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev,
                     gooddef_threshold=gooddef_threshold, aucg=aucg, kernel_inst=kernel_inst)
 
 
@@ -646,6 +649,10 @@ def train_good(train_loader, val_loader, model,
                 plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
                 plt.close()
 
+
+        print("### Calc Error")
+        good_d, good_stddev = calc_errorval(output, sub_vec)
+
         # # umap
         # # embedding = PCA(random_state=0).fit_transform(output.cpu())
         # embedding = umap.UMAP(n_neighbors=5, random_state=0).fit_transform(output)
@@ -654,42 +661,42 @@ def train_good(train_loader, val_loader, model,
         # plt.colorbar()
         # plt.savefig('umap.png')
 
-        # ----------------validation------------------------
-        # 生成した正常部分空間を正常データのみで評価(寄与率決定用)
-        # DEBUG 寄与率決定の判断をgoodではなくgood_valでやる
-        # train_loader.sampler.set_state("good")
-        train_loader.sampler.set_state("good_val")
-        outputs_list = []
-        targets_list = []
-        for i, (images, target) in enumerate(train_loader):
-            if args.gpu is not None:
-                images = images.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
-
-            # compute output
-            if model is not None:
-                output = model(images)
-            else:
-                # 画像を表示したい
-                output = images.reshape(images.shape[0], -1)
-            output = output.cpu()
-            target = target.cpu()
-            # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
-            # output = scaler.transform(output)
-            outputs_list.append(output)
-            targets_list.append(target)
-
-        output = torch.cat(outputs_list).numpy()
-        target = torch.cat(targets_list).numpy()
-
-        if args.usekernel:
-            output = kernel_inst.transform(output)
-
-        print("### Calc Error")
-        good_d, good_stddev = calc_errorval(output, sub_vec)
-
         gooddef_threshold = None
         if args.judge and not final:
+            # ----------------validation------------------------
+            # 生成した正常部分空間を正常データのみで評価(寄与率決定用)
+            # DEBUG 寄与率決定の判断をgoodではなくgood_valでやる
+            # train_loader.sampler.set_state("good")
+            train_loader.sampler.set_state("good_val")
+            outputs_list = []
+            targets_list = []
+            for i, (images, target) in enumerate(train_loader):
+                if args.gpu is not None:
+                    images = images.cuda(args.gpu, non_blocking=True)
+                target = target.cuda(args.gpu, non_blocking=True)
+
+                # compute output
+                if model is not None:
+                    output = model(images)
+                else:
+                    # 画像を表示したい
+                    output = images.reshape(images.shape[0], -1)
+                output = output.cpu()
+                target = target.cpu()
+                # output = output/np.linalg.norm(output, axis=1).reshape(-1, 1)
+                # output = scaler.transform(output)
+                outputs_list.append(output)
+                targets_list.append(target)
+
+            output = torch.cat(outputs_list).numpy()
+            target = torch.cat(targets_list).numpy()
+
+            if args.usekernel:
+                output = kernel_inst.transform(output)
+
+            print("### Calc Error")
+            good_d, good_stddev = calc_errorval(output, sub_vec)
+
             # pisson分布を仮定して正常と異常の閾値を決定
             print("np.mean(good_d), min, max, np.std(good_d)", np.mean(good_d), np.min(good_d), np.max(good_d), np.std(good_d))
             print("len(good_d)", len(good_d))
@@ -732,15 +739,15 @@ def train_good(train_loader, val_loader, model,
                 ax.grid(True)
                 fig.savefig(os.path.join(args.pngdir, "norm_{}.png".format(k_count)))
 
-        if args.usepseudo:
-            # ----------------validation------------------------
-            # 生成した部分空間を擬似データのAUCで評価（寄与率決定用）
-            # 正常データから疑似データを生成
-            pseudo_output, pseudo_target = hyp.makedata(output)
-            print("pseudo_output", pseudo_output.shape)
-            print("pseudo_target", pseudo_target.shape)
-            pseudo_d, pseudo_stddev = calc_errorval(pseudo_output, sub_vec)
-            calc_roc(pseudo_target, pseudo_d, args, prefix="pseudo_{}".format(test_threshold), aucg=None)
+            if args.usepseudo:
+                # ----------------validation------------------------
+                # 生成した部分空間を擬似データのAUCで評価（寄与率決定用）
+                # 正常データから疑似データを生成
+                pseudo_output, pseudo_target = hyp.makedata(output)
+                print("pseudo_output", pseudo_output.shape)
+                print("pseudo_target", pseudo_target.shape)
+                pseudo_d, pseudo_stddev = calc_errorval(pseudo_output, sub_vec)
+                calc_roc(pseudo_target, pseudo_d, args, prefix="pseudo_{}".format(test_threshold), aucg=None)
 
     print("Train good Time {}".format(time.time() - start_time))
 
@@ -751,7 +758,7 @@ def train_good(train_loader, val_loader, model,
         return np.mean(good_d) + good_stddev*10, good_d, gooddef_threshold
 
 
-def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev,
+def train_defective(train_loader, train_loader1000, val_loader, model, args, threshold, sub_vec, sub_val, good_mean, good_stddev,
                     aucg, gooddef_threshold, kernel_inst=None):
 
     # Train
@@ -765,6 +772,9 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
         # 異常の学習に使用した画像をテスト用に保存
         learned_defect_image = []
         p0 = None
+        old_good_mean = good_mean
+        # 閾値はgoodの平均異常度より大きくなければならない
+        assert old_good_mean < gooddef_threshold
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
             # DEBUG_SHOW(images)
             end = time.time()
@@ -848,6 +858,42 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             stime = time.time() - end
             print("Time : ", f"{stime:.3f}")
 
+            if args.updgooddef:
+                # 更新後の部分空間の変化を見て，閾値を更新
+                # 平均ベクトルの差を部分空間の差とする
+                train_loader1000.sampler.set_state("good")
+                outputs_list = []
+                targets_list = []
+                for i, (images, target) in enumerate(train_loader1000):
+                    if args.gpu is not None:
+                        images = images.cuda(args.gpu, non_blocking=True)
+                    target = target.cuda(args.gpu, non_blocking=True)
+
+                    # compute output
+                    if model is not None:
+                        output = model(images)
+                    else:
+                        output = images.reshape(images.shape[0], -1)
+                    output = output.cpu()
+                    target = target.cpu()
+                    outputs_list.append(output)
+                    targets_list.append(target)
+
+                output = torch.cat(outputs_list).numpy()
+                target = torch.cat(targets_list).numpy()
+
+                if args.usekernel:
+                    output = kernel_inst.transform(output)
+
+                good_d, good_stddev = calc_errorval(output, sub_vec)
+                good_mean = np.mean(good_d)
+
+                diff_good_mean = good_mean - old_good_mean
+                print("diff good_mean", diff_good_mean)
+                # 閾値を更新
+                gooddef_threshold += diff_good_mean
+
+            # test
             testall(val_loader, model, args, threshold, sub_vec,
                     sub_val, learned_defect_image, prefix="test_{}".format(i),
                     gooddef_threshold=gooddef_threshold,
