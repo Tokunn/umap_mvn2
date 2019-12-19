@@ -649,7 +649,6 @@ def train_good(train_loader, val_loader, model,
                 plt.savefig(os.path.join(args.pngdir, "vec_img_{}".format(i)))
                 plt.close()
 
-
         print("### Calc Error")
         good_d, good_stddev = calc_errorval(output, sub_vec)
 
@@ -819,7 +818,7 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
             # インクリメンタルPCAを用いた更新
             # incremental
             print("Incremental")
-            if args.clear_gn: # clear good number of image
+            if args.clear_gn:  # clear good number of image
                 nn = i
             else:
                 nn = i+n_good
@@ -901,6 +900,7 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
 
 
 def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", gooddef_threshold=None, aucg=None, kernel_inst=None):
+    print("testall", prefix)
     start_time = time.time()
     # -------------------test---------------------------------
     # 生成した正常部分空間をテストデータを含めて評価(可視化用)
