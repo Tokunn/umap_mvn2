@@ -863,7 +863,7 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
                 train_loader1000.sampler.set_state("good")
                 outputs_list = []
                 targets_list = []
-                for i, (images, target) in enumerate(train_loader1000):
+                for jj, (images, target) in enumerate(train_loader1000):
                     if args.gpu is not None:
                         images = images.cuda(args.gpu, non_blocking=True)
                     target = target.cuda(args.gpu, non_blocking=True)
@@ -891,6 +891,7 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
                 print("diff good_mean", diff_good_mean)
                 # 閾値を更新
                 gooddef_threshold += diff_good_mean
+                old_good_mean = good_mean
 
             # test
             testall(val_loader, model, args, threshold, sub_vec,
