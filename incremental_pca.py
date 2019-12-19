@@ -1002,6 +1002,7 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     # plt.ylim(0, 1)
     # plt.ylim(0, 0.2)
     plt.scatter(range(len(d)), d, c=target_plot, cmap=cm.nipy_spectral)
+    plt.hlines([gooddef_threshold], 0, len(d))
     plt.colorbar()
     plt.title(str(val_loader.dataset.classes))
     plt.savefig(os.path.join(args.pngdir, 'D_{}_{}.png'.format(prefix, str(threshold))))
