@@ -249,6 +249,8 @@ class SaveAUCGraph(object):
         self.acclist = []
         self.dlist = []
         self.updlist = []
+        self.threlist = []
+        self.goodavglist = []
 
     def add(self, auc):
         self.auclist.append(auc)
@@ -265,6 +267,14 @@ class SaveAUCGraph(object):
     def addupd(self, upd):
         self.updlist.append(upd)
         self.saveupd()
+
+    def addthre(self, thre):
+        self.threlist.append(thre)
+        self.savethre()
+
+    def addgoodavg(self, avg):
+        self.goodavglist.append(avg)
+        self.savegoodavg()
 
     def save(self):
         plt.figure()
@@ -301,6 +311,20 @@ class SaveAUCGraph(object):
         plt.close()
         with open(os.path.join(self.pngpath, 'UPDlog{}.pcl'.format(os.path.basename(self.pngpath))), 'wb') as f:
             pickle.dump(self.updlist, f)
+
+    def savefunc(self, savelist, name):
+        plt.figure()
+        plt.plot(savelist)
+        plt.savefig(os.path.join(self.pngpath, '{}log{}.png'.format(name, os.path.basename(self.pngpath))))
+        plt.close()
+        with open(os.path.join(self.pngpath, '{}log{}.pcl'.format(name, os.path.basename(self.pngpath))), 'wb') as f:
+            pickle.dump(savelist, f)
+
+    def savethre(self):
+        self.savefunc(self.threlist, "THRE")
+
+    def savegoodavg(self):
+        self.savefunc(self.goodavglist, "GOODAVG")
 
 
 def main():
@@ -914,11 +938,13 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
 
                 good_d, good_stddev = calc_errorval(output, sub_vec)
                 good_mean = np.mean(good_d)
+                aucg.addgoodavg(good_mean)
 
                 diff_good_mean = good_mean - old_good_mean
                 print("diff good_mean", diff_good_mean)
                 # 閾値を更新
                 gooddef_threshold += diff_good_mean
+                aucg.addthre(gooddef_threshold)
                 old_good_mean = good_mean
 
             # test

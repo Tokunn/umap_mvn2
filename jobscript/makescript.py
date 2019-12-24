@@ -13,8 +13,8 @@ for k in glob.glob(os.path.expanduser('~/Documents/umap_mvn2/dataset_all/*')):
         # for j in [9999]:
         # for j in range(0, 19, 6):  # layer
         for j in [19]:
-            for l in [6, 15, 32]:
-            # for l in [6, 5, 15, 32, 85, 55, 71, 16, 78, 69]:  # seed
+            # for l in [6, 15, 32]:
+            for l in [6, 5, 15, 32, 85, 55, 71, 16, 78, 69]:  # seed
                 # for m in [0.000]:
                 # for m in [0.85, 0.9, 0.95, 0.99, 0.999]:
                 for m in [0.999]:
