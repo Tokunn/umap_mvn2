@@ -111,6 +111,7 @@ parser.add_argument('--gamma', action='store_true')
 parser.add_argument('--n_images', default=None, type=int)
 parser.add_argument('--clear_gn', action='store_true')
 parser.add_argument('--updgooddef', action='store_true')
+parser.add_argument('--concat', action='store_true')
 
 best_acc1 = 0
 
@@ -338,23 +339,50 @@ def main():
         main_worker(args.gpu, ngpus_per_node, args)
 
 
+# 出力のmeanをとることなくそのまま取り出せるmobilenetv2
+# 特定層の出力をconcatしたものを取り出せるmobilenetv2
 class FlattenMobilenetV2(nn.Module):
-    def __init__(self, n_layer, flatten):
+    def __init__(self, n_layer, flatten, concat):
         super(FlattenMobilenetV2, self).__init__()
         # mobilenetv2
         model = torch.hub.load('pytorch/vision', 'mobilenet_v2', pretrained=True)
         model = nn.Sequential(*list(model.features.children())[:n_layer])
         print(model)
         print(len(model))
+
         self.model = model
         self.flatten = flatten
+        self.concat = concat
+        self.concatlist = [0, 9, 17]
 
     def forward(self, x):
-        x = self.model(x)
-        if self.flatten:
-            x = torch.flatten(x, 1)
+        # 中間層結合版の場合
+        if self.concat:
+            print("Concat", self.concatlist)
+            # 1レイヤーづつ通していく
+            xlist = []
+            for i, m in enumerate(self.model):
+                x = m(x)
+                # concatlistにある場合にmeanして保存
+                if i in self.concatlist:
+                    xlist.append(x.mean([2, 3]))
+                    print(i, x.mean([2, 3]).size())
+            # concatして出力形式に変換
+            # x = np.concatenate(xlist, axis=1)
+            x = torch.cat(xlist, axis=1)
+            print("model output shape", x.shape)
+
+        # 通常動作
         else:
-            x = x.mean([2, 3])
+            x = self.model(x)
+
+            # meanを取らずに全部取り出し
+            if self.flatten:
+                x = torch.flatten(x, 1)
+            # meanをとって取り出し
+            else:
+                x = x.mean([2, 3])
+
         return x
 
 
@@ -422,7 +450,7 @@ def get_model_layer(n_layer, args, ngpus_per_node):
     if not n_layer:
         return None, train_loader1000, train_loader1, val_loader
 
-    model = FlattenMobilenetV2(n_layer, args.flatten)
+    model = FlattenMobilenetV2(n_layer, args.flatten, args.concat)
     torch.onnx.export(model, torch.randn(10, 3, 224, 224), 'mobilenet_v2.onnx', verbose=False)
 
     if args.distributed:
