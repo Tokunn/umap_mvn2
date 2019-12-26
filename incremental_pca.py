@@ -377,7 +377,7 @@ class FlattenMobilenetV2(nn.Module):
         self.model = model
         self.flatten = flatten
         self.concat = concat
-        self.concatlist = [0, 9, 17]
+        self.concatlist = [1, 7, 13, 19]
 
     def forward(self, x):
         # 中間層結合版の場合
@@ -385,14 +385,27 @@ class FlattenMobilenetV2(nn.Module):
             print("Concat", self.concatlist)
             # 1レイヤーづつ通していく
             xlist = []
+            # 元画像を入れる場合
+            if 0 in self.concatlist:
+                # 3x50x50にリサイズ
+                x0list = []
+                for xx in x:
+                    x0 = transforms.functional.to_pil_image(xx.cpu())
+                    x0 = transforms.functional.resize(x0, (RESIZE, RESIZE))
+                    x0list.append(np.asarray(x0).reshape(-1))
+                x0 = transforms.functional.to_tensor(np.asarray(x0list))
+                x0 = x0.reshape((len(x), -1))
+                print('0', x0.size())
+                xlist.append(x0)
+
             for i, m in enumerate(self.model):
                 x = m(x)
+                i += 1
                 # concatlistにある場合にmeanして保存
                 if i in self.concatlist:
-                    xlist.append(x.mean([2, 3]))
+                    xlist.append(x.mean([2, 3]).cpu())
                     print(i, x.mean([2, 3]).size())
             # concatして出力形式に変換
-            # x = np.concatenate(xlist, axis=1)
             x = torch.cat(xlist, axis=1)
             print("model output shape", x.shape)
 
