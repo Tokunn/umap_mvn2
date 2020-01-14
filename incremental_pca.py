@@ -112,6 +112,7 @@ parser.add_argument('--n_images', default=None, type=int)
 parser.add_argument('--clear_gn', action='store_true')
 parser.add_argument('--updgooddef', action='store_true')
 parser.add_argument('--concat', action='store_true')
+parser.add_argument('--defgmix', action='store_true')
 
 best_acc1 = 0
 
@@ -177,15 +178,30 @@ class KFoldSampler(torch.utils.data.Sampler):
         np.random.seed(seed)
         np.random.shuffle(self.good_index)
         np.random.shuffle(self.defective_index)
+        self.defgmix = False
+        if args.defgmix:
+            self.defgmix = True
+            k += 1  # 正常と異常のごっちゃの学習に使用する分を確保
+            print("defgmix n_split : ", k)
         self.good_index_split = np.array_split(self.good_index, k)
         self.state = "good_train"
-        self.set_k(0)
+        if args.defgmix:
+            self.set_k(0, 1)
+        else:
+            self.set_k(0)
 
-    def set_k(self, kidx):
+    def set_k(self, k0idx, k1idx=None):
         self.train = self.good_index_split[:]
-        del self.train[kidx]
-        self.train = [i for inter in self.train for i in inter]
-        self.val = self.good_index_split[kidx]
+        print("set_k k0idx:{}, k1idx:{}".format(k0idx, k1idx))
+        if self.defgmix:
+            del self.train[np.max((k0idx, k1idx))]
+            del self.train[np.min((k0idx, k1idx))]  # defと一緒用のtrainを削除
+        else:
+            del self.train[k0idx]  # valを削除
+        self.train = [i for inter in self.train for i in inter]  # train のリストを２次元から１次元に
+        self.val = self.good_index_split[k0idx]
+        if self.defgmix:
+            self.traindefgmix = self.good_index_split[k1idx]
 
     def set_state(self, state):
         self.state = state
@@ -200,7 +216,12 @@ class KFoldSampler(torch.utils.data.Sampler):
         elif self.state == "good":
             return iter(self.good_index)
         elif self.state == "defective":
-            return iter(self.defective_index)
+            if self.defgmix:
+                concatlist = np.concatenate((self.defective_index, self.traindefgmix))
+                np.random.shuffle(concatlist)
+                return iter(concatlist)
+            else:
+                return iter(self.defective_index)
         else:
             assert True
 
@@ -214,7 +235,10 @@ class KFoldSampler(torch.utils.data.Sampler):
         elif self.state == "good":
             return len(self.good_index)
         elif self.state == "defective":
-            return len(self.defective_index)
+            if self.defgmix:
+                return len(self.defective_index) + len(self.traindefgmix)
+            else:
+                return len(self.defective_index)
         else:
             assert True
 
@@ -329,6 +353,7 @@ class SaveAUCGraph(object):
 
 def main():
     args = parser.parse_args()
+    print(args)
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -575,7 +600,10 @@ def main_worker(gpu, ngpus_per_node, args):
             for k_count in range(args.kfold):
                 # Train
                 print("\n#" + "="*30 + ' train_good SVD ' + str(test_layer) + '/' + str(test_threshold) + '/' + str(k_count) + ' ' + "="*30 + "#")
-                train_loader1000.sampler.set_k(k_count)
+                if args.defgmix:
+                    train_loader1000.sampler.set_k(k_count, k_count+1)
+                else:
+                    train_loader1000.sampler.set_k(k_count)
                 print("train index", train_loader1000.sampler.train)
                 print("val_index", train_loader1000.sampler.val)
                 d_result, d_good, th_gooddef = train_good(train_loader1000, val_loader,

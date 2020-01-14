@@ -8,8 +8,9 @@ with open('jobscript.sh', 'r') as f:
 
 scripts = []
 for k in glob.glob(os.path.expanduser('~/Documents/umap_mvn2/dataset_all/*')):
-    # for i in [0.01, 0.02, 0.05, 0.07, 0.1, 0.2, 0.5, 0.7, 1.0]: # c
-    for i in [1.0]:
+    # for i in [0.001, 0.005, 0.01, 0.1]: # c
+    # for i in [0.01, 0.1, 0.5, 1.0]: # c
+    for i in [0.05]:
         # for j in [9999]:
         # for j in range(0, 19, 6):  # layer
         for j in [19]:
