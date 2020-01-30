@@ -194,7 +194,8 @@ class KFoldSampler(torch.utils.data.Sampler):
         self.train = self.good_index_split[:]
         print("set_k k0idx:{}, k1idx:{}".format(k0idx, k1idx))
         if self.defgmix:
-            del self.train[np.max((k0idx, k1idx))]
+            # valとdefを後ろから先に削除
+            del self.train[np.max((k0idx, k1idx))]  # valを削除
             del self.train[np.min((k0idx, k1idx))]  # defと一緒用のtrainを削除
         else:
             del self.train[k0idx]  # valを削除
@@ -223,7 +224,7 @@ class KFoldSampler(torch.utils.data.Sampler):
             else:
                 return iter(self.defective_index)
         else:
-            assert True
+            assert False
 
     def __len__(self):
         if self.state == "all":
@@ -240,7 +241,7 @@ class KFoldSampler(torch.utils.data.Sampler):
             else:
                 return len(self.defective_index)
         else:
-            assert True
+            assert False
 
 
 class ImageFolderPath(torchvision.datasets.folder.DatasetFolder):
@@ -275,6 +276,14 @@ class SaveAUCGraph(object):
         self.updlist = []
         self.threlist = []
         self.goodavglist = []
+        self.history = {}
+
+    def addhistory(self, label, data):
+        if label in self.history.keys():
+            self.history[label].append(data)
+        else:
+            self.history[label] = [data]
+        self.savehistory(label)
 
     def add(self, auc):
         self.auclist.append(auc)
@@ -299,6 +308,9 @@ class SaveAUCGraph(object):
     def addgoodavg(self, avg):
         self.goodavglist.append(avg)
         self.savegoodavg()
+
+    def savehistory(self, label):
+        self.savefunc(self.history[label], label)
 
     def save(self):
         plt.figure()
@@ -899,8 +911,12 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
                 def_d, _ = calc_errorval(output, sub_vec)
                 # if ((good_mean + 3*good_mean) >= def_d[0]):
                 # gooddef_thresholdを用いて学習するかどうか判定
+                is_train = gooddef_threshold < def_d
+                # 判定結果の正誤を記録
+                aucg.addhistory("target", target[0])
+                aucg.addhistory("TF", target[0] == is_train)
                 # 閾値を下回ったらReject
-                if (gooddef_threshold >= def_d):
+                if not is_train:
                     print("[[[Reject]]]")
                     continue
 
