@@ -184,11 +184,16 @@ class KFoldSampler(torch.utils.data.Sampler):
             k += 1  # 正常と異常のごっちゃの学習に使用する分を確保
             print("defgmix n_split : ", k)
         self.good_index_split = np.array_split(self.good_index, k)
+        # 初期化
+        self.falsenegatives = []
         self.state = "good_train"
         if args.defgmix:
             self.set_k(0, 1)
         else:
             self.set_k(0)
+
+    def add_falsengative(self, fn_index):
+        self.falsenegatives.append(fn_index)
 
     def set_k(self, k0idx, k1idx=None):
         self.train = self.good_index_split[:]
@@ -223,6 +228,8 @@ class KFoldSampler(torch.utils.data.Sampler):
                 return iter(concatlist)
             else:
                 return iter(self.defective_index)
+        elif self.state == "falsenegative":
+            return iter(self.falsenegatives)
         else:
             assert False
 
@@ -240,6 +247,8 @@ class KFoldSampler(torch.utils.data.Sampler):
                 return len(self.defective_index) + len(self.traindefgmix)
             else:
                 return len(self.defective_index)
+        elif self.state == "falsenegative":
+            return len(self.falsenegatives)
         else:
             assert False
 
@@ -877,6 +886,8 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
         learned_defect_image = []
         p0 = None
         old_good_mean = good_mean
+        # 間違えて正常だと判断した異常画像を追加学習ように保存
+        false_negatives = []
         # 閾値はgoodの平均異常度より大きくなければならない
         assert old_good_mean < gooddef_threshold
         for i, (images, target) in enumerate(train_loader):  # TODO batch dependancies
@@ -915,9 +926,15 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
                 # 判定結果の正誤を記録
                 aucg.addhistory("target", target[0])
                 aucg.addhistory("TF", target[0] == is_train)
+                # 本当は異常なのに正常だと判断されたデータを記録
+                if ((not is_train) and (target[0] == 1)):
+                    false_negatives.append((images, target))
+                    train_loader.sampler.add_falsengative(i)
                 # 閾値を下回ったらReject
                 if not is_train:
                     print("[[[Reject]]]")
+                    if (target[0] != is_train):
+                        print("Incorrect reject")
                     continue
 
             learned_defect_image.append(images.numpy()[0])
@@ -1009,6 +1026,11 @@ def train_defective(train_loader, train_loader1000, val_loader, model, args, thr
                     sub_val, learned_defect_image, prefix="test_{}".format(i),
                     gooddef_threshold=gooddef_threshold,
                     aucg=aucg, kernel_inst=kernel_inst)
+
+        print("FalseNegative", train_loader.sampler.falsenegatives)
+        train_loader.sampler.set_state("falsenegative")
+        for (i, (images, target)), fn in zip(enumerate(train_loader), false_negatives):
+            print(fn, (images, target))
 
 
 def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", gooddef_threshold=None, aucg=None, kernel_inst=None):
