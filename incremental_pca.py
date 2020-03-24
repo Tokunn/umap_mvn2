@@ -229,6 +229,7 @@ class SaveAUCGraph(object):
 
 def main():
     args = parser.parse_args()
+    args.gpu = None
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -338,9 +339,11 @@ def get_model_layer(n_layer, args, ngpus_per_node):
     model = torch.hub.load('pytorch/vision', 'mobilenet_v2', pretrained=True)
     model.classifier = nn.Sequential(*list(model.classifier.children())[:-2])
     if n_layer:
-        model.features = nn.Sequential(*list(model.features.children())[:n_layer])
+        # model.features = nn.Sequential(*list(model.features.children())[:n_layer])
+        model = nn.Sequential(*list(model.features.children())[:n_layer])
         print(model)
-        print(len(model.features))
+        # print(len(model.features))
+        print(len(model))
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -358,7 +361,6 @@ def get_model_layer(n_layer, args, ngpus_per_node):
             model = torch.nn.parallel.DistributedDataParallel(
                     model, device_ids=[args.gpu])
         else:
-            model.cuda()
             # DistributedDataParallel will divide and allocate batch_size to
             # all available GPUs if device_ids are not set
             model = torch.nn.parallel.DistributedDataParallel(model)
@@ -370,9 +372,8 @@ def get_model_layer(n_layer, args, ngpus_per_node):
         # batch_size to all available GPUs
         if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
             model.features = torch.nn.DataParallel(model.features)
-            model.cuda()
         else:
-            model = torch.nn.DataParallel(model).cuda()
+            model = torch.nn.DataParallel(model)
 
     # # define loss function (criterion) and optimizer
     # criterion = nn.CrossEntropyLoss().cuda(args.gpu)
@@ -408,7 +409,8 @@ def get_model_layer(n_layer, args, ngpus_per_node):
     
     # ------------------------------- openvino ----------------------------
     if args.vino:
-        temp_model = "mobilenet_v2_12_fp16.xml"
+        temp_model = "mobilenet_v2_19_fp16.xml"
+        # temp_model = "mobilenet_v2.xml"
         temp_device = "MYRIAD"
         model = NCSModel(temp_model)
 
@@ -493,12 +495,13 @@ def main_worker(gpu, ngpus_per_node, args):
         np.save("threshold.npy", threshold)
 
     else:  # vino()
-        model, train_loader1000, train_loader1, val_loader = get_model_layer(12, args, ngpus_per_node)
-        sub_vec = np.load("sub_vec.npy")
-        sub_val = np.load("sub_val.npy")
-        good_mean = np.load("good_mean.npy")
-        good_stddev = np.load("good_stddev.npy")
-        threshold = np.load("threshold.npy")
+        vino_layer = 19
+        model, train_loader1000, train_loader1, val_loader = get_model_layer(vino_layer, args, ngpus_per_node)
+        sub_vec = np.load("19/sub_vec.npy")
+        sub_val = np.load("19/sub_val.npy")
+        good_mean = np.load("19/good_mean.npy")
+        good_stddev = np.load("19/good_stddev.npy")
+        threshold = np.load("19/threshold.npy")
         kernel_inst=None
 
     # それに対して異常データを追加していく
@@ -526,7 +529,7 @@ def train_good(train_loader, val_loader, model,
 
             if args.gpu is not None:
                 images = images.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
+                target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
             if model is not None:
@@ -617,7 +620,7 @@ def train_good(train_loader, val_loader, model,
         for i, (images, target) in enumerate(train_loader):
             if args.gpu is not None:
                 images = images.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
+                target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
             if model is not None:
@@ -714,12 +717,15 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
 
             if args.gpu is not None:
                 images = images.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
+            # target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
             if not args.vino:
                 if model is not None:
+                    start_featureext = time.time()
                     output = model(images)
+                    stop_featureext = time.time()
+                    print("[TIME] Feature Extract : {:.4f}".format(stop_featureext - start_featureext))
                 else:
                     # 画像を表示したい
                     output = images.reshape(images.shape[0], -1)
@@ -727,7 +733,10 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
                 target = target.cpu().numpy()
             else:
                 image = np.transpose(images.cpu().numpy(), (0, 2, 3, 1))
+                start_featureext = time.time()
                 output = model(image[0])
+                stop_featureext = time.time()
+                print("[TIME] Feature Extract : {:.4f}".format(stop_featureext - start_featureext))
                 output = np.asarray([output])
                 target = target.cpu().numpy()
 
@@ -738,14 +747,19 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             print("input shape (model output)", output.shape)
 
             if args.usereject:
+                start_reject = time.time()
                 # dを用いて学習するかどうかを判定
                 def_d, _ = calc_errorval(output, sub_vec)
                 if ((good_mean + 3*good_mean) >= def_d[0]):
                     print("[[[Reject]]]")
+                    stop_reject = time.time()
+                    print("[TIME] Reject : {:.4f}".format(stop_reject - start_reject))
                     continue
+                stop_reject = time.time()
+                print("[TIME] Reject : {:.4f}".format(stop_reject - start_reject))
 
             learned_defect_image.append(images.numpy()[0])
-            saveimg(learned_defect_image, args, prefix="learned")
+            # saveimg(learned_defect_image, args, prefix="learned")
 
             # インクリメンタルPCAを用いた更新
             # incremental
@@ -767,21 +781,25 @@ def train_defective(train_loader, val_loader, model, args, threshold, sub_vec, s
             sub_vec = e_vec.T[:-1].T
             sub_val = e_val[:-1]
 
-            # 部分空間の更新を確認
-            p1 = sub_vec @ sub_vec.T
-            if p0 is not None:
-                p_e_val, _ = np.linalg.eigh(p0 @ p1 @ p0)
-                p_e_val = p_e_val[::-1]
-                # print(p_e_val[:len(sub_val)])
-            p0 = p1
+            # DEBUG 0114
+            # # 部分空間の更新を確認
+            # p1 = sub_vec @ sub_vec.T
+            # if p0 is not None:
+            #     p_e_val, _ = np.linalg.eigh(p0 @ p1 @ p0)
+            #     p_e_val = p_e_val[::-1]
+            #     # print(p_e_val[:len(sub_val)])
+            # p0 = p1
 
             stime = time.time() - end
+            print("time : ", stime)
             # print("Time : ", f"{stime:.3f}")
 
             if not args.vino:
                 testall(val_loader, model, args, threshold, sub_vec,
                         sub_val, learned_defect_image, prefix="test_{}".format(i),
                         aucg=aucg, kernel_inst=kernel_inst)
+            print("sub_vec", sub_vec.shape)
+            print("sub_val", sub_val.shape)
 
 
 def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image, prefix="", aucg=None, kernel_inst=None):
@@ -794,7 +812,7 @@ def testall(val_loader, model, args, threshold, sub_vec, sub_val, learned_image,
     for i, (images, target, path) in enumerate(val_loader):
         if args.gpu is not None:
             images = images.cuda(args.gpu, non_blocking=True)
-        target = target.cuda(args.gpu, non_blocking=True)
+        # target = target.cuda(args.gpu, non_blocking=True)
 
         # compute output
         if model is not None:
@@ -917,6 +935,7 @@ def calc_sub_vec(e_vec, e_val, threshold, args):
 
 
 def incremental_PCA(features, sub_vec, sub_val, n, args, state="addgoodonly"):
+    start_incpca = time.time()
     h = np.reshape(features[0] - sub_vec @ sub_vec.T @ features[0], (-1, 1))
     h_norm = np.linalg.norm(h)
     h_hat = h / h_norm if h_norm > 0.1 else np.zeros(h.shape)
@@ -950,6 +969,8 @@ def incremental_PCA(features, sub_vec, sub_val, n, args, state="addgoodonly"):
     e_vec = np.block([sub_vec, h_hat]) @ rot
     # e_vec = sub_vec @ rot  # del new vec
     e_vec = e_vec.T[::-1].T
+    stop_incpca = time.time()
+    print("[TIME] IncrementalPCA : {:.4f}".format(stop_incpca - start_incpca))
     return e_vec, e_val
 
 

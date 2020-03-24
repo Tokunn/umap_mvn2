@@ -8,7 +8,8 @@ import logging as log
 from time import time
 from openvino.inference_engine import IENetwork, IECore
 
-args_model = "mobilenet_v2_12_fp16.xml"
+# args_model = "mobilenet_v2_12_fp16.xml"
+args_model = "mobilenet_v2.xml"
 args_input = "20180714014405.jpg"
 args_device = "MYRIAD"
 
